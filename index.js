@@ -30,6 +30,10 @@ function showEntryError(msg) {
   $('entryError').textContent = msg;
 }
 
+function showLobbyError(msg) {
+  $('lobbyError').textContent = msg;
+}
+
 // ----- screen switching -----
 function showLobby() {
   $('entryScreen').style.display = 'none';
@@ -42,16 +46,36 @@ async function callApi(serverUrl, path, method, body) {
   try {
     res = await fetch(`${serverUrl}${path}`, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        // Free ngrok URLs show an HTML "are you sure you want to visit
+        // this site" page on first contact instead of forwarding the
+        // request -- this header tells ngrok to skip that and forward
+        // straight through. Harmless to send to any other kind of
+        // server (a plain LAN IP, localhost, etc just ignores it).
+        'ngrok-skip-browser-warning': 'true',
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (err) {
     // Most common cause here: the server address is wrong/unreachable,
-    // or (for an ngrok URL specifically) the request got blocked by a
-    // browser CORS/network error rather than a clean HTTP error.
+    // or blocked by a browser CORS/network error rather than a clean
+    // HTTP error.
     throw new Error(`Could not reach the server at ${serverUrl}. Double-check the address.`);
   }
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    // The server responded, but not with JSON -- most likely an ngrok
+    // interstitial/warning page slipped through, or the address points
+    // at something that isn't this game's server at all.
+    throw new Error(
+      'The server responded with something unexpected (not game data). ' +
+      'If this is an ngrok address, try opening it directly in a new ' +
+      'browser tab once and clicking through any ngrok warning page, then retry.'
+    );
+  }
   if (!res.ok) {
     throw new Error(data.error || 'Something went wrong.');
   }
@@ -143,15 +167,17 @@ $('startBtn').addEventListener('click', async () => {
     await callApi(serverUrl, `/game/${gameId}/start`, 'POST', { name: myName });
     // The next poll tick will see started:true and redirect.
   } catch (err) {
-    showEntryError(err.message);
+    showLobbyError(err.message);
   }
 });
 
 // ----- background polling: detect when the leader starts the game -----
 function startPolling(serverUrl) {
+  let consecutiveFailures = 0;
   pollHandle = setInterval(async () => {
     try {
       const data = await callApi(serverUrl, `/game/${gameId}/state?name=${encodeURIComponent(myName)}`, 'GET');
+      consecutiveFailures = 0;
       if (data.started) {
         clearInterval(pollHandle);
         const url = `game.html?server=${encodeURIComponent(serverUrl)}` +
@@ -161,9 +187,17 @@ function startPolling(serverUrl) {
         return;
       }
       renderLobby(data);
+      showLobbyError('');
     } catch (err) {
-      // Transient network errors while polling shouldn't spam the lobby UI;
-      // just leave the last known state on screen.
+      // A single missed poll is normal (a brief network blip) and isn't
+      // worth alarming anyone over. But if this keeps failing, something
+      // is actually wrong (wrong address, ngrok interstitial, server
+      // down) -- surface it after a few misses in a row rather than
+      // silently leaving the lobby stuck on stale data forever.
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= 3) {
+        showLobbyError(`Lost contact with the server: ${err.message}`);
+      }
     }
   }, 1500);
 }

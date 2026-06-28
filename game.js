@@ -45,12 +45,33 @@ function cardLabel(card) {
 
 // ----- API helper -----
 async function callApi(path, method, body) {
-  const res = await fetch(`${SERVER_URL}${path}`, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json();
+  let res;
+  try {
+    res = await fetch(`${SERVER_URL}${path}`, {
+      method,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        // Free ngrok URLs show an HTML warning page on first contact
+        // instead of forwarding the request -- this header tells ngrok
+        // to skip that and forward straight through. Harmless to send
+        // to any other kind of server.
+        'ngrok-skip-browser-warning': 'true',
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    throw new Error(`Could not reach the server at ${SERVER_URL}.`);
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    throw new Error(
+      'The server responded with something unexpected (not game data). ' +
+      'If this is an ngrok address, open it directly in a new browser ' +
+      'tab once and click through any ngrok warning page, then retry.'
+    );
+  }
   if (!res.ok) {
     throw new Error(data.error || 'Something went wrong.');
   }
