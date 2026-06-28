@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sins &amp; Commandments</title>
+</head>
+<body>
+
+  <h1>Sins &amp; Commandments</h1>
+
+  <section>
+    <h2>Table</h2>
+    <p>Last played: <span id="lastPlayed">—</span></p>
+    <p>Last sin played: <span id="lastSinPlayed">—</span></p>
+    <p>Turn order: <span id="turnOrder"></span></p>
+    <p>Current turn: <span id="currentTurn"></span></p>
+  </section>
+
+  <section>
+    <h2>Other players</h2>
+    <ul id="otherPlayers"></ul>
+  </section>
+
+  <section id="spectatorNotice" style="display:none;">
+    <p><strong id="spectatorText"></strong></p>
+  </section>
+
+  <section id="myTurnNotice" style="display:none;">
+    <p><strong>It's your turn.</strong></p>
+  </section>
+
+  <section>
+    <h2>Your cards</h2>
+    <div id="myBlueCards"></div>
+    <div id="mySinCards"></div>
+  </section>
+
+  <section id="noMovesSection" style="display:none;">
+    <p>You have no legal card to play.</p>
+    <button id="forcedDrawBtn">Draw</button>
+  </section>
+
+  <section id="greedFollowupSection" style="display:none;">
+    <p>Choose up to 2 cards to play after greed (they must share a color or commandment with each other):</p>
+    <div id="greedFollowupChoices"></div>
+    <p>
+      Selected: <span id="greedSelectedText">none</span>
+    </p>
+    <button id="confirmGreedBtn">Play selected cards</button>
+    <button id="playGreedAloneBtn">Play greed alone (no follow-up)</button>
+    <button id="cancelGreedBtn">Cancel</button>
+  </section>
+
+  <section id="messageSection">
+    <p id="messageText"></p>
+  </section>
+
+  <section id="gameOverSection" style="display:none;">
+    <h2 id="gameOverText"></h2>
+    <p id="gameOverDetails"></p>
+    <div id="rematchArea"></div>
+  </section>
+
+  <script src="game.js"></script>
+</body>
+</html>

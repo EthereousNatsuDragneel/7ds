@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sins &amp; Commandments</title>
+</head>
+<body>
+
+  <div id="entryScreen">
+    <h1>Sins &amp; Commandments</h1>
+
+    <p>
+      <label>Server address<br>
+        <input id="serverInput" type="text" value="http://127.0.0.1:5000" size="40">
+      </label><br>
+      <small>If the host is running this on their own computer (ngrok, a
+      shared Wi-Fi IP, etc.), they'll give you an address to put here
+      instead of the default. Leave it as-is if you're playing on the
+      same computer as the server.</small>
+    </p>
+
+    <p>
+      <label>Your name<br>
+        <input id="nameInput" type="text">
+      </label>
+    </p>
+
+    <p>
+      <button id="createBtn">Create a new game</button>
+    </p>
+
+    <p>
+      or join an existing one:<br>
+      <label>Game ID<br>
+        <input id="gameIdInput" type="text">
+      </label>
+      <button id="joinBtn">Join</button>
+    </p>
+
+    <p id="entryError"></p>
+  </div>
+
+  <div id="lobbyScreen" style="display:none;">
+    <h1>Game <span id="lobbyGameId"></span></h1>
+
+    <p id="lobbyMessage"></p>
+
+    <h2>Players</h2>
+    <ul id="lobbyPlayerList"></ul>
+
+    <p>
+      <button id="startBtn" style="display:none;">Start game</button>
+    </p>
+  </div>
+
+  <script src="index.js"></script>
+</body>
+</html>
