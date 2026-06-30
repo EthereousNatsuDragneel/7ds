@@ -10,7 +10,7 @@
 
   <section>
     <h2>Table</h2>
-    <p>Last played: <span id="lastPlayed">—</span></p>
+    <p>Last played: <span id="lastPlayed" aria-live="polite">—</span></p>
     <p>Last sin played: <span id="lastSinPlayed">—</span></p>
     <p>Turn order: <span id="turnOrder"></span></p>
     <p>Current turn: <span id="currentTurn"></span></p>
@@ -31,8 +31,14 @@
 
   <section>
     <h2>Your cards</h2>
+    <p id="myUsedSins"></p>
     <div id="myBlueCards"></div>
     <div id="mySinCards"></div>
+  </section>
+
+  <section id="lustBurnSection" style="display:none;">
+    <p id="lustBurnPrompt"></p>
+    <div id="lustBurnChoices"></div>
   </section>
 
   <section id="noMovesSection" style="display:none;">

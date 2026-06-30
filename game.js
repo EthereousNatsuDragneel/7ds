@@ -19,6 +19,97 @@ const myName = params.get('name');
 // normal play always has ?server=... already filled in by index.js.
 const SERVER_URL = (params.get('server') || 'http://127.0.0.1:5000').replace(/\/+$/, '');
 
+// ---------------------------------------------------------------------------
+// Sound effects
+// ---------------------------------------------------------------------------
+// Card-place sounds use .ogg -- if your actual files have a different
+// extension (the original request said ".aug", which isn't a real audio
+// format, so this assumes it was a typo for ".ogg"), just change the 4
+// filenames below to match.
+const CARD_PLACE_SOUNDS = [
+  'assets/sfx/card-place-1.ogg',
+  'assets/sfx/card-place-2.ogg',
+  'assets/sfx/card-place-3.ogg',
+  'assets/sfx/card-place-4.ogg',
+];
+const DRAW_SOUNDS = [
+  'assets/sfx/draw_card_1.mp3',
+  'assets/sfx/draw_card_2.mp3',
+];
+
+// Preload every sound once as a reusable <audio> element. We don't reuse
+// the SAME element for overlapping/rapid-fire plays though -- see
+// playSound() below, which clones a fresh Audio() each time so quick
+// successive sounds don't cut each other off.
+const SOUND_CACHE = {};
+[...CARD_PLACE_SOUNDS, ...DRAW_SOUNDS].forEach((src) => {
+  const audio = new Audio(src);
+  audio.preload = 'auto';
+  SOUND_CACHE[src] = audio;
+});
+
+function pickRandom(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+// Plays one sound from `list` at random. Clones the cached element so
+// overlapping calls (rapid-fire card sounds) don't interrupt each other --
+// reusing one shared <audio> element would restart-and-cut-off on every
+// call instead of layering naturally.
+function playSound(list) {
+  const src = pickRandom(list);
+  const cached = SOUND_CACHE[src];
+  const node = cached ? cached.cloneNode(true) : new Audio(src);
+  // Swallow play() rejections quietly -- browsers block autoplay before
+  // any user interaction, which can briefly happen right as the page
+  // loads; once the player has clicked anything at all, this won't fire.
+  node.play().catch(() => {});
+}
+
+// A randomized gap (ms) between two consecutive sounds in a burst --
+// shared by both the multi-card-play case (greed) and the multi-card-
+// draw case (gluttony etc), so neither ever sounds metronomic.
+function randomGap() {
+  return 60 + Math.random() * 160; // ~60-220ms
+}
+
+// Tracks the highest event id already turned into a sound, so repeated
+// polls (which always return the same recent-events window) never
+// double-play a sound for something already handled. Starts at -1 (no
+// events processed yet) rather than 0, since event ids start at 1.
+let lastProcessedEventId = -1;
+
+// Consumes state.events (in id order) and triggers sound for each new
+// one. All NEW events arriving in a single poll are treated as one
+// "burst" and staggered together -- e.g. greed playing 3 cards shows up
+// as 3 separate events (1 play_sin + 2 play_commandment) that all
+// arrive in the same poll response, and should sound like 3 quick,
+// unevenly-spaced taps, not 3 simultaneous sounds or one sound per
+// 1.5s poll cycle. A `draw` event with count > 1 (e.g. gluttony's 3
+// commandment cards at once) staggers its own multiple sounds the same
+// way, inline within the burst.
+function processSoundEvents(events) {
+  if (!events || events.length === 0) return;
+
+  const newEvents = events.filter((ev) => ev.id > lastProcessedEventId);
+  if (newEvents.length === 0) return;
+  lastProcessedEventId = Math.max(...newEvents.map((ev) => ev.id));
+
+  let elapsed = 0;
+  for (const ev of newEvents) {
+    if (ev.type === 'play_commandment' || ev.type === 'play_sin') {
+      setTimeout(() => playSound(CARD_PLACE_SOUNDS), elapsed);
+      elapsed += randomGap();
+    } else if (ev.type === 'draw') {
+      const count = ev.count || 1;
+      for (let i = 0; i < count; i++) {
+        setTimeout(() => playSound(DRAW_SOUNDS), elapsed);
+        elapsed += randomGap();
+      }
+    }
+  }
+}
+
 // Tracks whether the bottom-of-hand UI is showing the normal card list or
 // the greed follow-up picker. Local UI state only -- the server doesn't
 // know about it until a card is actually submitted. (Envy no longer has
@@ -117,6 +208,9 @@ function render(state) {
     if (p.has_won) {
       line += ' — won, now spectating';
     }
+    if (p.pending_lust_burns > 0) {
+      line += ` — owes ${p.pending_lust_burns} sin burn(s)`;
+    }
     if (p.pride_immune) {
       line += ' — immune (pride)';
     }
@@ -126,6 +220,14 @@ function render(state) {
 
   // --- my own spectator notice (eliminated OR already won) ---
   const myInfo = state.your_hand;
+  if (myInfo) {
+    $('myUsedSins').textContent = myInfo.used_sins.length > 0
+      ? `Sins you've used: ${myInfo.used_sins.join(', ')}`
+      : "Sins you've used: none yet";
+  } else {
+    $('myUsedSins').textContent = '';
+  }
+
   if (myInfo && myInfo.eliminated) {
     $('spectatorNotice').style.display = '';
     $('spectatorText').textContent = "You've been eliminated. You can keep watching the game.";
@@ -205,8 +307,23 @@ function renderHand(state, isMyTurn) {
   if (!myInfo || isSpectating) {
     $('noMovesSection').style.display = 'none';
     $('greedFollowupSection').style.display = 'none';
+    $('lustBurnSection').style.display = 'none';
     return;
   }
+
+  // Forced lust burn: if it's my turn and I owe burns, that's the ONLY
+  // thing I can do -- the server rejects any normal /play or
+  // /forced_draw call until pending_lust_burns reaches 0. Show the burn
+  // picker instead of normal hand buttons, and skip everything else.
+  if (isMyTurn && myInfo.pending_lust_burns > 0) {
+    blueDiv.innerHTML = '';
+    sinDiv.innerHTML = '';
+    $('noMovesSection').style.display = 'none';
+    $('greedFollowupSection').style.display = 'none';
+    renderLustBurnPicker(myInfo);
+    return;
+  }
+  $('lustBurnSection').style.display = 'none';
 
   // While picking greed follow-ups, hide the normal hand buttons so the
   // player isn't tempted to click something else mid-selection.
@@ -311,6 +428,13 @@ function renderGreedChoicesFromLastState() {
   if (lastKnownState) renderGreedChoices(lastKnownState);
 }
 
+// greedSelected now tracks the INDEX of each chosen card within
+// your_hand.hand_blue, not its value -- this is what makes duplicate
+// cards (e.g. two separate "orange truth" cards) independently
+// selectable instead of being treated as interchangeable. The server
+// itself still only cares about {value, color} (it has no concept of
+// "which specific copy"), so we translate index -> {value, color} only
+// at the moment we actually send the request.
 function renderGreedChoices(state) {
   const container = $('greedFollowupChoices');
   container.innerHTML = '';
@@ -318,47 +442,52 @@ function renderGreedChoices(state) {
   const myInfo = state.your_hand;
   const atSelectionLimit = greedSelected.length >= 2;
 
-  for (const card of myInfo.hand_blue) {
-    const alreadyPicked = greedSelected.some(
-      (c) => c.value === card.commandment && c.color === card.color
-    );
+  myInfo.hand_blue.forEach((card, index) => {
+    const isPicked = greedSelected.includes(index);
     const btn = document.createElement('button');
-    btn.textContent = cardLabel(card) + (alreadyPicked ? ' (selected)' : '');
+    btn.textContent = cardLabel(card) + (isPicked ? ' (selected)' : '');
     // A selected card stays clickable so the player can deselect it.
     // An unselected card becomes disabled once 2 are already chosen,
     // since greed allows at most 2 follow-up cards.
-    btn.disabled = !alreadyPicked && atSelectionLimit;
-    btn.addEventListener('click', () => toggleGreedCard(card, state));
+    btn.disabled = !isPicked && atSelectionLimit;
+    btn.addEventListener('click', () => toggleGreedCard(index, state));
     container.appendChild(btn);
-  }
+  });
 
   $('greedSelectedText').textContent =
-    greedSelected.length === 0 ? 'none' : greedSelected.map((c) => cardLabel({ commandment: c.value, color: c.color })).join(', ');
+    greedSelected.length === 0
+      ? 'none'
+      : greedSelected.map((i) => cardLabel(myInfo.hand_blue[i])).join(', ');
 }
 
-function toggleGreedCard(card, state) {
-  const idx = greedSelected.findIndex(
-    (c) => c.value === card.commandment && c.color === card.color
-  );
-  if (idx >= 0) {
-    greedSelected.splice(idx, 1);
+function toggleGreedCard(index, state) {
+  const pos = greedSelected.indexOf(index);
+  if (pos >= 0) {
+    greedSelected.splice(pos, 1);
   } else if (greedSelected.length < 2) {
-    // IMPORTANT: the server expects each follow-up object to use the key
-    // "value" for the commandment name (matching how every other card
-    // play is sent), NOT "commandment". Sending the wrong key here makes
-    // the server reject the whole greed play as invalid.
-    greedSelected.push({ value: card.commandment, color: card.color });
+    greedSelected.push(index);
   }
   renderGreedChoices(state);
 }
 
 $('confirmGreedBtn').addEventListener('click', async () => {
   try {
+    const myInfo = lastKnownState.your_hand;
+    // Translate the chosen INDICES into the {value, color} shape the
+    // server expects, one per selected card -- this is also where
+    // duplicates get resolved correctly: if both indices happen to
+    // point at "orange truth" (because the player explicitly picked
+    // both copies), the server receives two separate follow-up entries
+    // and plays both, exactly as it should.
+    const followups = greedSelected.map((i) => ({
+      value: myInfo.hand_blue[i].commandment,
+      color: myInfo.hand_blue[i].color,
+    }));
     await callApi(`/game/${gameId}/play`, 'POST', {
       name: myName,
       type: 'sin',
       value: 'greed',
-      greed_followups: greedSelected,
+      greed_followups: followups,
     });
     setMessage('');
   } catch (err) {
@@ -390,6 +519,47 @@ function exitSpecialMode() {
   $('greedFollowupSection').style.display = 'none';
 }
 
+// ----- forced lust burn -----
+// Shows whichever choice applies: if the player holds sin cards, they
+// pick one to burn; if they hold none, there's nothing to pick -- a
+// single button just triggers drawing-then-burning automatically.
+function renderLustBurnPicker(myInfo) {
+  const section = $('lustBurnSection');
+  section.style.display = '';
+
+  $('lustBurnPrompt').textContent = myInfo.hand_sins.length > 0
+    ? `You must burn ${myInfo.pending_lust_burns} sin card(s) before playing (lust). Choose one to burn now:`
+    : `You must burn ${myInfo.pending_lust_burns} sin card(s) before playing (lust). You have none -- draw one to burn:`;
+
+  const container = $('lustBurnChoices');
+  container.innerHTML = '';
+
+  if (myInfo.hand_sins.length > 0) {
+    for (const sin of myInfo.hand_sins) {
+      const btn = document.createElement('button');
+      btn.textContent = `Burn ${sin}`;
+      btn.addEventListener('click', () => resolveLustBurn(sin));
+      container.appendChild(btn);
+    }
+  } else {
+    const btn = document.createElement('button');
+    btn.textContent = 'Draw and burn';
+    btn.addEventListener('click', () => resolveLustBurn(null));
+    container.appendChild(btn);
+  }
+}
+
+async function resolveLustBurn(chosenSin) {
+  try {
+    const body = { name: myName };
+    if (chosenSin) body.sin = chosenSin;
+    await callApi(`/game/${gameId}/burn_sin`, 'POST', body);
+    setMessage('');
+  } catch (err) {
+    setMessage(err.message);
+  }
+}
+
 // ----- forced draw -----
 $('forcedDrawBtn').addEventListener('click', async () => {
   try {
@@ -404,6 +574,20 @@ $('forcedDrawBtn').addEventListener('click', async () => {
 async function pollLoop() {
   try {
     const state = await fetchState();
+
+    // Detect a rematch: the server resets its event-id counter back to 1
+    // on every fresh round, so if the new batch's ids are LOWER than
+    // what we've already processed, the game was reset out from under
+    // us -- clear the tracker so the new round's events play sounds
+    // again instead of being silently skipped as "already seen".
+    if (state.events && state.events.length > 0) {
+      const maxNewId = Math.max(...state.events.map((ev) => ev.id));
+      if (maxNewId < lastProcessedEventId) {
+        lastProcessedEventId = -1;
+      }
+    }
+    processSoundEvents(state.events);
+
     lastKnownState = state;
     render(state);
   } catch (err) {
