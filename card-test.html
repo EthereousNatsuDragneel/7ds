@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sins & Commandments — Card Visual Test</title>
+
+<!-- ===== LIBRARY 1: vanilla-tilt.js =====
+     Loaded from a CDN (a public server hosting the file). This one library
+     gives us BOTH the tilt effect AND the glare/sheen effect for free —
+     we just attach it to an element and set a few numbers. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vanilla-tilt/1.8.1/vanilla-tilt.min.js"></script>
+
+<!-- ===== LIBRARY 2: GSAP =====
+     This handles the flip animation — rotating the card 180 degrees
+     smoothly when you click it. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<!-- ===== LIBRARY 3: tsParticles =====
+     Spawns and animates lots of small moving shapes (embers, mist,
+     leaves, etc). This is the "bundle" build, which includes the
+     extra shape types (like emoji/character shapes) we use for the
+     leaves preset below. -->
+<script src="https://cdn.jsdelivr.net/npm/tsparticles@3.5.0/tsparticles.bundle.min.js"></script>
+
+<style>
+  :root {
+    --sin-color: #ff2d55;        /* crimson glow for the SIN card */
+    --commandment-color: #2dd4ff; /* cyan glow for the COMMANDMENT card */
+    --bg: #0b0b0f;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+    font-family: system-ui, sans-serif;
+    perspective: 1200px; /* gives 3D depth to child elements */
+  }
+
+  .cards-row {
+    display: flex;
+    gap: 80px;
+  }
+
+  .controls {
+    display: flex;
+    gap: 12px;
+    color: #ccc;
+    font-size: 14px;
+    align-items: center;
+  }
+  select {
+    background: #1a1a1a;
+    color: white;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+
+  /* ---------- CARD SHELL ---------- */
+  .card-wrap {
+    width: 220px;
+    height: 320px;
+    cursor: pointer;
+    position: relative; /* so the particle layer can sit behind it */
+  }
+
+  /* The particle canvas sits BEHIND the card, extending past its
+     edges, so embers/mist appear to emanate from around the card
+     rather than being trapped inside it. */
+  .particle-layer {
+    position: absolute;
+    inset: -60px;
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  /* This is the element GSAP will rotate for the flip.
+     transform-style: preserve-3d means its children keep their
+     3D position instead of flattening. */
+  .card-flip {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+  }
+
+  /* Front and back faces sit in the exact same spot, but the "back"
+     one is pre-rotated 180deg so it only becomes visible once the
+     whole card has flipped. backface-visibility: hidden hides
+     whichever face is currently pointed away from the viewer. */
+  .card-face {
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    backface-visibility: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: white;
+    overflow: hidden;
+  }
+
+  .card-face.back {
+    transform: rotateY(180deg);
+  }
+
+  /* ---------- COLOR + GLOW PER CARD ---------- */
+  .sin-card .card-face.front {
+    background: #111;
+    border: 2px solid var(--sin-color);
+    box-shadow: 0 0 25px var(--sin-color), 0 0 60px rgba(255,45,85,0.35);
+  }
+  .commandment-card .card-face.front {
+    background: #0a1a2e;
+    border: 2px solid var(--commandment-color);
+    box-shadow: 0 0 25px var(--commandment-color), 0 0 60px rgba(45,212,255,0.35);
+  }
+  /* the "back" faces (what you see after flipping) — just a placeholder
+     until we have real front artwork */
+  .card-face.back {
+    background: #1a1a1a;
+    border: 2px dashed #555;
+    color: #888;
+    font-size: 16px;
+  }
+
+  /* ---------- HOLO-FOIL SHIMMER OVERLAY ----------
+     A gradient sitting on TOP of the card. mix-blend-mode: color-dodge
+     makes it blend like light reflecting off foil rather than a flat
+     sticker. vanilla-tilt updates two CSS variables (--px, --py) as you
+     move the mouse, which we use below to shift the gradient position,
+     so the shimmer moves as you tilt the card. */
+  .holo {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    mix-blend-mode: color-dodge;
+    opacity: 0.55;
+    background: conic-gradient(
+      from calc(var(--px, 50) * 3.6deg),
+      #ff2d55, #ffb02d, #2dff88, #2dd4ff, #a12dff, #ff2d55
+    );
+  }
+
+  .card-face.front img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 14px;
+  }
+
+  label {
+    color: #ccc;
+    text-align: center;
+    display: block;
+    margin-top: 14px;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="controls">
+    <label for="sinEffect" style="margin:0;">Sin card effect:</label>
+    <select id="sinEffect">
+      <option value="none">None</option>
+      <option value="embers" selected>Embers</option>
+      <option value="mist">Mist</option>
+      <option value="leaves">Leaves</option>
+    </select>
+    <label for="commandmentEffect" style="margin:0;">Commandment card effect:</label>
+    <select id="commandmentEffect">
+      <option value="none">None</option>
+      <option value="embers">Embers</option>
+      <option value="mist" selected>Mist</option>
+      <option value="leaves">Leaves</option>
+    </select>
+  </div>
+
+  <div class="cards-row">
+
+    <div>
+      <div class="card-wrap sin-card" id="sinCard">
+        <div id="sinParticles" class="particle-layer"></div>
+        <div class="card-flip">
+          <div class="card-face front">
+            <img src="assets/cards/SIN CARD.PNG" alt="Sin card back">
+            <div class="holo"></div>
+          </div>
+          <div class="card-face back">front art<br>goes here later</div>
+        </div>
+      </div>
+      <label>Sin card — click to flip</label>
+    </div>
+
+    <div>
+      <div class="card-wrap commandment-card" id="commandmentCard">
+        <div id="commandmentParticles" class="particle-layer"></div>
+        <div class="card-flip">
+          <div class="card-face front">
+            <img src="assets/cards/COMMANDMENT CARD.PNG" alt="Commandment card back">
+            <div class="holo"></div>
+          </div>
+          <div class="card-face back">front art<br>goes here later</div>
+        </div>
+      </div>
+      <label>Commandment card — click to flip</label>
+    </div>
+
+  </div>
+
+
+<script>
+  // ---------- STEP 1: Tilt + Glare ----------
+  // VanillaTilt.init attaches the effect to every element matching this
+  // selector. max = how many degrees it tilts. speed = how fast it
+  // reacts. glare + max-glare = turns on the light-sheen streak.
+  VanillaTilt.init(document.querySelectorAll(".card-wrap"), {
+    max: 15,
+    speed: 400,
+    glare: true,
+    "max-glare": 0.3,
+    perspective: 1000,
+  });
+
+  // ---------- STEP 2: Flip on click ----------
+  // We track flip state per card, and use GSAP to animate the rotateY
+  // from 0 to 180 (or back) smoothly instead of it snapping instantly.
+  function makeFlippable(wrapId) {
+    const wrap = document.getElementById(wrapId);
+    const flipEl = wrap.querySelector(".card-flip");
+    let flipped = false;
+
+    wrap.addEventListener("click", () => {
+      flipped = !flipped;
+      gsap.to(flipEl, {
+        rotateY: flipped ? 180 : 0,
+        duration: 0.6,
+        ease: "power2.inOut",
+      });
+    });
+  }
+  makeFlippable("sinCard");
+  makeFlippable("commandmentCard");
+
+  // ---------- STEP 3: Particle effects (embers / mist / leaves) ----------
+  // Each of these is a small config object describing the particle
+  // system. Swapping between them is literally just swapping which
+  // config gets loaded into a given container.
+
+  const emberConfig = {
+    fpsLimit: 60,
+    particles: {
+      number: { value: 40 },
+      color: { value: ["#ff4d2d", "#ff8a2d", "#ffd02d"] },
+      shape: { type: "circle" },
+      opacity: {
+        value: { min: 0.2, max: 0.8 },
+        animation: { enable: true, speed: 1, startValue: "max", destroy: "min" }
+      },
+      size: { value: { min: 1, max: 3 } },
+      move: {
+        enable: true,
+        speed: { min: 1, max: 2.5 },
+        direction: "top",       // drifts upward, like heat rising
+        random: true,           // slight left/right wobble
+        straight: false,
+        outModes: { default: "destroy", top: "destroy" }
+      },
+    },
+    emitters: {
+      position: { x: 50, y: 100 },  // spawn from the bottom of the layer
+      rate: { quantity: 2, delay: 0.15 },
+      size: { width: 100, height: 0 }
+    },
+    background: { color: "transparent" },
+  };
+
+  const mistConfig = {
+    fpsLimit: 60,
+    particles: {
+      number: { value: 14 },
+      color: { value: "#cfd8e3" },
+      shape: { type: "circle" },
+      opacity: { value: { min: 0.05, max: 0.18 } },
+      size: { value: { min: 40, max: 90 } },
+      move: {
+        enable: true,
+        speed: { min: 0.2, max: 0.6 },
+        direction: "right",     // slow horizontal drift, like fog rolling by
+        random: true,
+        straight: false,
+        outModes: { default: "out" }
+      },
+    },
+    background: { color: "transparent" },
+  };
+
+  const leavesConfig = {
+    fpsLimit: 60,
+    particles: {
+      number: { value: 18 },
+      color: { value: ["#b5651d", "#8a9a5b", "#c2703d"] },
+      shape: { type: "char", character: { value: ["🍂", "🍃"], font: "Verdana" } },
+      opacity: { value: 0.85 },
+      size: { value: { min: 12, max: 20 } },
+      rotate: {
+        value: { min: 0, max: 360 },
+        animation: { enable: true, speed: 8 }   // leaves spin as they fall
+      },
+      move: {
+        enable: true,
+        speed: { min: 0.6, max: 1.4 },
+        direction: "bottom",    // falls downward
+        random: true,           // sways side to side while falling
+        straight: false,
+        outModes: { default: "out" }
+      },
+    },
+    background: { color: "transparent" },
+  };
+
+  const effectConfigs = { embers: emberConfig, mist: mistConfig, leaves: leavesConfig };
+
+  // Keeps track of which particle instance is running in each slot,
+  // so we can destroy the old one before loading a new one.
+  async function setEffect(containerId, effectName) {
+    const container = tsParticles.dom().find(c => c.id === containerId);
+    if (container) container.destroy();
+
+    if (effectName === "none") return;
+    await tsParticles.load({ id: containerId, options: effectConfigs[effectName] });
+  }
+
+  document.getElementById("sinEffect").addEventListener("change", (e) => {
+    setEffect("sinParticles", e.target.value);
+  });
+  document.getElementById("commandmentEffect").addEventListener("change", (e) => {
+    setEffect("commandmentParticles", e.target.value);
+  });
+
+  // Load the initial defaults (embers on the sin card, mist on the commandment card)
+  setEffect("sinParticles", "embers");
+  setEffect("commandmentParticles", "mist");
+
+</script>
+
+</body>
+</html>
