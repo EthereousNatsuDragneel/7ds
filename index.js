@@ -165,6 +165,12 @@ $('startBtn').addEventListener('click', async () => {
   const serverUrl = getServerUrl();
   try {
     await callApi(serverUrl, `/game/${gameId}/start`, 'POST', { name: myName });
+    // Play the pack-open sound the instant the start succeeds -- this is
+    // triggered directly by a user gesture (the button click), so browser
+    // autoplay policy always allows it.
+    const packSounds = ['assets/sfx/cards-pack-open-1.ogg', 'assets/sfx/cards-pack-open-2.ogg'];
+    const src = packSounds[Math.floor(Math.random() * packSounds.length)];
+    new Audio(src).play().catch(() => {});
     // The next poll tick will see started:true and redirect.
   } catch (err) {
     showLobbyError(err.message);

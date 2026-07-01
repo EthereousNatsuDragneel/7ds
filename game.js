@@ -36,13 +36,17 @@ const DRAW_SOUNDS = [
   'assets/sfx/draw_card_1.mp3',
   'assets/sfx/draw_card_2.mp3',
 ];
+const PACK_OPEN_SOUNDS = [
+  'assets/sfx/cards-pack-open-1.ogg',
+  'assets/sfx/cards-pack-open-2.ogg',
+];
 
 // Preload every sound once as a reusable <audio> element. We don't reuse
 // the SAME element for overlapping/rapid-fire plays though -- see
 // playSound() below, which clones a fresh Audio() each time so quick
 // successive sounds don't cut each other off.
 const SOUND_CACHE = {};
-[...CARD_PLACE_SOUNDS, ...DRAW_SOUNDS].forEach((src) => {
+[...CARD_PLACE_SOUNDS, ...DRAW_SOUNDS, ...PACK_OPEN_SOUNDS].forEach((src) => {
   const audio = new Audio(src);
   audio.preload = 'auto';
   SOUND_CACHE[src] = audio;
@@ -64,6 +68,10 @@ function playSound(list) {
   // any user interaction, which can briefly happen right as the page
   // loads; once the player has clicked anything at all, this won't fire.
   node.play().catch(() => {});
+}
+
+function playPackOpenSound() {
+  playSound(PACK_OPEN_SOUNDS);
 }
 
 // A randomized gap (ms) between two consecutive sounds in a burst --
@@ -114,8 +122,11 @@ function processSoundEvents(events) {
 // the greed follow-up picker. Local UI state only -- the server doesn't
 // know about it until a card is actually submitted. (Envy no longer has
 // a picker: it auto-targets the next player, same as sloth/lust/gluttony.)
-let mode = 'normal'; // 'normal' | 'greed_followup'
-let greedSelected = []; // up to 2 {value, color} objects chosen for greed's follow-up
+let mode = 'normal'; // 'normal' | 'greed_followup' | 'pride_commandment' | 'react_pride_commandment'
+let greedSelected = []; // up to 2 indices into hand_blue chosen for greed's follow-up
+// When pride needs a commandment card (proactive or reactive), we store
+// what kind of request to fire after the player picks the card.
+let prideContext = null; // null | 'proactive' | 'reactive'
 
 // Human-readable labels for colors, since the server's internal names
 // (e.g. "bluish_green") aren't what a player should see on a button.
@@ -284,6 +295,7 @@ function renderRematchArea(state) {
     btn.addEventListener('click', async () => {
       try {
         await callApi(`/game/${gameId}/rematch`, 'POST', { name: myName });
+        playPackOpenSound();
       } catch (err) {
         setMessage(err.message);
       }
@@ -308,25 +320,43 @@ function renderHand(state, isMyTurn) {
     $('noMovesSection').style.display = 'none';
     $('greedFollowupSection').style.display = 'none';
     $('lustBurnSection').style.display = 'none';
+    $('reactionSection').style.display = 'none';
+    $('prideCommandmentSection').style.display = 'none';
     return;
   }
 
-  // Forced lust burn: if it's my turn and I owe burns, that's the ONLY
-  // thing I can do -- the server rejects any normal /play or
-  // /forced_draw call until pending_lust_burns reaches 0. Show the burn
-  // picker instead of normal hand buttons, and skip everything else.
+  // Lust burns are highest priority -- resolve before anything else.
   if (isMyTurn && myInfo.pending_lust_burns > 0) {
-    blueDiv.innerHTML = '';
-    sinDiv.innerHTML = '';
     $('noMovesSection').style.display = 'none';
     $('greedFollowupSection').style.display = 'none';
+    $('reactionSection').style.display = 'none';
+    $('prideCommandmentSection').style.display = 'none';
     renderLustBurnPicker(myInfo);
     return;
   }
   $('lustBurnSection').style.display = 'none';
 
-  // While picking greed follow-ups, hide the normal hand buttons so the
-  // player isn't tempted to click something else mid-selection.
+  // Sloth reaction: it's my turn but I have a pending skip to resolve first.
+  // Show wrath/pride/accept options instead of the normal hand.
+  const hasPendingSloth = isMyTurn && myInfo.pending_sloth_reaction;
+  const hasPendingReaction = isMyTurn && state.pending_reaction && state.pending_reaction.target === myName;
+  if (hasPendingSloth || hasPendingReaction) {
+    $('noMovesSection').style.display = 'none';
+    $('greedFollowupSection').style.display = 'none';
+    $('prideCommandmentSection').style.display = 'none';
+    renderReactionPicker(state, myInfo);
+    return;
+  }
+  $('reactionSection').style.display = 'none';
+
+  // While picking a pride commandment card or greed follow-ups,
+  // hide the normal hand buttons.
+  if (mode === 'pride_commandment' || mode === 'react_pride_commandment') {
+    $('greedFollowupSection').style.display = 'none';
+    return;
+  }
+  $('prideCommandmentSection').style.display = 'none';
+
   if (mode === 'greed_followup') {
     return;
   }
@@ -344,10 +374,11 @@ function renderHand(state, isMyTurn) {
   for (const sin of myInfo.hand_sins) {
     const btn = document.createElement('button');
     btn.textContent = sin;
-    // Wrath is special: only enabled as a reaction, not on your normal turn.
-    const isReactionWindow = state.pending_wrath_target === myName;
+    // Wrath is only usable when you have a pending reaction to resolve
+    // (on your own turn now -- no longer an out-of-turn interrupt).
     if (sin === 'wrath') {
-      btn.disabled = !isReactionWindow;
+      const canReactWrath = hasPendingReaction && state.pending_reaction.can_wrath;
+      btn.disabled = !canReactWrath;
     } else {
       btn.disabled = !isMyTurn;
     }
@@ -388,11 +419,19 @@ async function playCommandment(card) {
 }
 
 function onSinButtonClicked(sin) {
-  // sloth/envy/lust/gluttony all auto-target the next player on the
-  // server now -- no target picker needed for any of them, including
-  // envy. Only greed needs extra UI (the follow-up card picker).
   if (sin === 'greed') {
     enterGreedFollowupMode();
+    return;
+  }
+  // Pride always requires a commandment card -- show the picker before submitting.
+  if (sin === 'pride') {
+    prideContext = 'proactive';
+    enterPrideCommandmentMode();
+    return;
+  }
+  // Wrath on your own turn means reacting to a pending punishment.
+  if (sin === 'wrath') {
+    reactWrath();
     return;
   }
   playSin(sin);
@@ -513,10 +552,144 @@ $('playGreedAloneBtn').addEventListener('click', async () => {
 
 $('cancelGreedBtn').addEventListener('click', exitSpecialMode);
 
+// ----- reaction picker (sloth/lust/gluttony pending reaction) -----
+function renderReactionPicker(state, myInfo) {
+  const section = $('reactionSection');
+  section.style.display = '';
+  const container = $('reactionChoices');
+  container.innerHTML = '';
+
+  const pendingReaction = state.pending_reaction;
+  const hasPendingSloth = myInfo.pending_sloth_reaction;
+  const sin = pendingReaction ? pendingReaction.sin : 'sloth';
+
+  $('reactionPrompt').textContent = hasPendingSloth || sin === 'sloth'
+    ? `You are being skipped (sloth). You may fight back or accept the skip.`
+    : `${pendingReaction.from} hit you with ${sin}. You may react or accept the punishment.`;
+
+  // Wrath option
+  const canWrath = pendingReaction ? pendingReaction.can_wrath : myInfo.hand_sins.includes('wrath');
+  if (canWrath) {
+    const btn = document.createElement('button');
+    btn.textContent = sin === 'sloth'
+      ? 'Use wrath (A misses their next 2 turns)'
+      : 'Use wrath (undo punishment, redirect doubled to original thrower)';
+    btn.addEventListener('click', reactWrath);
+    container.appendChild(btn);
+  }
+
+  // Pride option
+  const canPride = pendingReaction ? pendingReaction.can_pride : myInfo.hand_sins.includes('pride');
+  if (canPride) {
+    const btn = document.createElement('button');
+    btn.textContent = sin === 'sloth'
+      ? 'Use pride (skip undone, you get immunity + play a free card)'
+      : 'Use pride (punishment undone, immunity granted, play a free card)';
+    btn.addEventListener('click', () => {
+      prideContext = 'reactive';
+      enterPrideCommandmentMode();
+    });
+    container.appendChild(btn);
+  }
+
+  // Accept option
+  const acceptBtn = document.createElement('button');
+  acceptBtn.textContent = sin === 'sloth'
+    ? 'Accept skip (skip your turn)'
+    : 'Accept punishment (do nothing)';
+  acceptBtn.addEventListener('click', acceptPunishment);
+  container.appendChild(acceptBtn);
+}
+
+async function reactWrath() {
+  try {
+    await callApi(`/game/${gameId}/react_wrath`, 'POST', { name: myName });
+    setMessage('');
+    mode = 'normal';
+  } catch (err) {
+    setMessage(err.message);
+  }
+}
+
+async function acceptPunishment() {
+  try {
+    await callApi(`/game/${gameId}/accept_skip`, 'POST', { name: myName });
+    setMessage('');
+  } catch (err) {
+    setMessage(err.message);
+  }
+}
+
+// ----- pride commandment picker (proactive pride OR reactive pride) -----
+function enterPrideCommandmentMode() {
+  $('reactionSection').style.display = 'none';
+  $('greedFollowupSection').style.display = 'none';
+  $('noMovesSection').style.display = 'none';
+  $('myBlueCards').innerHTML = '';
+  $('mySinCards').innerHTML = '';
+  mode = prideContext === 'reactive' ? 'react_pride_commandment' : 'pride_commandment';
+  renderPrideCommandmentChoices(lastKnownState);
+}
+
+function renderPrideCommandmentChoices(state) {
+  const section = $('prideCommandmentSection');
+  section.style.display = '';
+  const container = $('prideCommandmentChoices');
+  container.innerHTML = '';
+
+  const myInfo = state.your_hand;
+  $('prideCommandmentPrompt').textContent = prideContext === 'reactive'
+    ? 'Use pride to undo the punishment. Choose any commandment card to play alongside it (free/wild):'
+    : 'Choose any commandment card to play alongside pride (free/wild):';
+
+  for (let i = 0; i < myInfo.hand_blue.length; i++) {
+    const card = myInfo.hand_blue[i];
+    const btn = document.createElement('button');
+    btn.textContent = cardLabel(card);
+    btn.addEventListener('click', () => confirmPride(card));
+    container.appendChild(btn);
+  }
+
+  if (myInfo.hand_blue.length === 0) {
+    const p = document.createElement('p');
+    p.textContent = 'You have no commandment cards to play with pride.';
+    container.appendChild(p);
+  }
+}
+
+async function confirmPride(card) {
+  try {
+    if (prideContext === 'reactive') {
+      await callApi(`/game/${gameId}/react_pride`, 'POST', {
+        name: myName,
+        commandment: card.commandment,
+        color: card.color,
+      });
+    } else {
+      // Proactive pride: use the /play route with the commandment in greed_followups
+      await callApi(`/game/${gameId}/play`, 'POST', {
+        name: myName,
+        type: 'sin',
+        value: 'pride',
+        greed_followups: [{ value: card.commandment, color: card.color }],
+      });
+    }
+    setMessage('');
+  } catch (err) {
+    setMessage(err.message);
+  }
+  exitSpecialMode();
+}
+
+$('cancelPrideBtn').addEventListener('click', exitSpecialMode);
+
 function exitSpecialMode() {
   mode = 'normal';
+  prideContext = null;
   greedSelected = [];
   $('greedFollowupSection').style.display = 'none';
+  $('prideCommandmentSection').style.display = 'none';
+  $('reactionSection').style.display = 'none';
 }
 
 // ----- forced lust burn -----

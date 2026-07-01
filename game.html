@@ -41,13 +41,24 @@
     <div id="lustBurnChoices"></div>
   </section>
 
+  <section id="reactionSection" style="display:none;">
+    <p id="reactionPrompt"></p>
+    <div id="reactionChoices"></div>
+  </section>
+
+  <section id="prideCommandmentSection" style="display:none;">
+    <p id="prideCommandmentPrompt">Choose a commandment card to play alongside pride (free/wild — any card is valid):</p>
+    <div id="prideCommandmentChoices"></div>
+    <button id="cancelPrideBtn">Cancel</button>
+  </section>
+
   <section id="noMovesSection" style="display:none;">
     <p>You have no legal card to play.</p>
     <button id="forcedDrawBtn">Draw</button>
   </section>
 
   <section id="greedFollowupSection" style="display:none;">
-    <p>Choose up to 2 cards to play after greed (they must share a color or commandment with each other):</p>
+    <p>Choose up to 2 cards to play after greed (any 2 cards — no matching required):</p>
     <div id="greedFollowupChoices"></div>
     <p>
       Selected: <span id="greedSelectedText">none</span>
