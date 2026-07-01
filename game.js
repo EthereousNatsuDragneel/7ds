@@ -200,7 +200,12 @@ function render(state) {
     ? `${state.last_sin_played.by} played ${state.last_sin_played.sin}`
     : '—';
 
-  $('turnOrder').textContent = state.turn_order.join(' → ');
+  $('turnOrder').textContent = state.turn_order
+    .filter((name) => {
+      const p = state.players.find((pl) => pl.name === name);
+      return p && !p.eliminated && !p.has_won;
+    })
+    .join(' → ');
   $('currentTurn').textContent = state.finished ? '—' : (state.current_player || '—');
 
   // --- other players ---
@@ -338,9 +343,14 @@ function renderHand(state, isMyTurn) {
 
   // Sloth reaction: it's my turn but I have a pending skip to resolve first.
   // Show wrath/pride/accept options instead of the normal hand.
+  // BUT: if we're already in the pride commandment picker (player chose
+  // pride from the reaction menu and is now picking a card), don't
+  // override that UI -- the server still reports pending_sloth_reaction
+  // until the react_pride call completes, so without this guard every
+  // 1.5s poll would snap the player back to the reaction menu.
   const hasPendingSloth = isMyTurn && myInfo.pending_sloth_reaction;
   const hasPendingReaction = isMyTurn && state.pending_reaction && state.pending_reaction.target === myName;
-  if (hasPendingSloth || hasPendingReaction) {
+  if ((hasPendingSloth || hasPendingReaction) && mode !== 'react_pride_commandment' && mode !== 'pride_commandment') {
     $('noMovesSection').style.display = 'none';
     $('greedFollowupSection').style.display = 'none';
     $('prideCommandmentSection').style.display = 'none';
@@ -373,23 +383,26 @@ function renderHand(state, isMyTurn) {
   // --- sin card buttons ---
   for (const sin of myInfo.hand_sins) {
     const btn = document.createElement('button');
-    btn.textContent = sin;
+    const alreadyUsed = myInfo.used_sins.includes(sin);
+    btn.textContent = alreadyUsed ? `${sin} (already used)` : sin;
     // Wrath is only usable when you have a pending reaction to resolve
     // (on your own turn now -- no longer an out-of-turn interrupt).
     if (sin === 'wrath') {
       const canReactWrath = hasPendingReaction && state.pending_reaction.can_wrath;
-      btn.disabled = !canReactWrath;
+      btn.disabled = !canReactWrath || alreadyUsed;
     } else {
-      btn.disabled = !isMyTurn;
+      btn.disabled = !isMyTurn || alreadyUsed;
     }
     btn.addEventListener('click', () => onSinButtonClicked(sin));
     sinDiv.appendChild(btn);
   }
 
   // --- no legal move at all ---
+  // Check for TRULY playable sins (not ones already used that somehow
+  // ended up in hand due to the envy/pile overlap edge case).
   const hasValidBlue = myInfo.hand_blue.some((c) => cardMatches(c, state));
-  const hasAnySin = myInfo.hand_sins.length > 0;
-  if (isMyTurn && !hasValidBlue && !hasAnySin) {
+  const hasPlayableSin = myInfo.hand_sins.some((s) => !myInfo.used_sins.includes(s));
+  if (isMyTurn && !hasValidBlue && !hasPlayableSin) {
     $('noMovesSection').style.display = '';
   } else {
     $('noMovesSection').style.display = 'none';
