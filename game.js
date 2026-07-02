@@ -399,9 +399,16 @@ function renderHand(state, isMyTurn) {
 
   // --- no legal move at all ---
   // Check for TRULY playable sins (not ones already used that somehow
-  // ended up in hand due to the envy/pile overlap edge case).
+  // ended up in hand, and not wrath unless there's an active pending reaction).
   const hasValidBlue = myInfo.hand_blue.some((c) => cardMatches(c, state));
-  const hasPlayableSin = myInfo.hand_sins.some((s) => !myInfo.used_sins.includes(s));
+  const hasPlayableSin = myInfo.hand_sins.some((s) => {
+    if (myInfo.used_sins.includes(s)) return false;
+    if (s === 'wrath') {
+      // wrath is only playable when there's a pending reaction targeting this player
+      return hasPendingReaction && state.pending_reaction.can_wrath;
+    }
+    return true;
+  });
   if (isMyTurn && !hasValidBlue && !hasPlayableSin) {
     $('noMovesSection').style.display = '';
   } else {

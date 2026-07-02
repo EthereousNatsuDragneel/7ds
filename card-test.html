@@ -133,24 +133,6 @@
     font-size: 16px;
   }
 
-  /* ---------- HOLO-FOIL SHIMMER OVERLAY ----------
-     A gradient sitting on TOP of the card. mix-blend-mode: color-dodge
-     makes it blend like light reflecting off foil rather than a flat
-     sticker. vanilla-tilt updates two CSS variables (--px, --py) as you
-     move the mouse, which we use below to shift the gradient position,
-     so the shimmer moves as you tilt the card. */
-  .holo {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    mix-blend-mode: color-dodge;
-    opacity: 0.55;
-    background: conic-gradient(
-      from calc(var(--px, 50) * 3.6deg),
-      #ff2d55, #ffb02d, #2dff88, #2dd4ff, #a12dff, #ff2d55
-    );
-  }
-
   .card-face.front img {
     width: 100%;
     height: 100%;
@@ -175,14 +157,20 @@
       <option value="none">None</option>
       <option value="embers" selected>Embers</option>
       <option value="mist">Mist</option>
+      <option value="smoke">Smoke</option>
+      <option value="snow">Snow</option>
       <option value="leaves">Leaves</option>
+      <option value="fireflies">Fireflies</option>
     </select>
     <label for="commandmentEffect" style="margin:0;">Commandment card effect:</label>
     <select id="commandmentEffect">
       <option value="none">None</option>
       <option value="embers">Embers</option>
-      <option value="mist" selected>Mist</option>
+      <option value="mist">Mist</option>
+      <option value="smoke">Smoke</option>
+      <option value="snow" selected>Snow</option>
       <option value="leaves">Leaves</option>
+      <option value="fireflies">Fireflies</option>
     </select>
   </div>
 
@@ -193,8 +181,7 @@
         <div id="sinParticles" class="particle-layer"></div>
         <div class="card-flip">
           <div class="card-face front">
-            <img src="assets/cards/SIN CARD.PNG" alt="Sin card back">
-            <div class="holo"></div>
+            <img src="assets/cards/SIN CARD.png" alt="Sin card back">
           </div>
           <div class="card-face back">front art<br>goes here later</div>
         </div>
@@ -207,8 +194,7 @@
         <div id="commandmentParticles" class="particle-layer"></div>
         <div class="card-flip">
           <div class="card-face front">
-            <img src="assets/cards/COMMANDMENT CARD.PNG" alt="Commandment card back">
-            <div class="holo"></div>
+            <img src="assets/cards/COMMANDMENT CARD.png" alt="Commandment card back">
           </div>
           <div class="card-face back">front art<br>goes here later</div>
         </div>
@@ -252,10 +238,10 @@
   makeFlippable("sinCard");
   makeFlippable("commandmentCard");
 
-  // ---------- STEP 3: Particle effects (embers / mist / leaves) ----------
-  // Each of these is a small config object describing the particle
-  // system. Swapping between them is literally just swapping which
-  // config gets loaded into a given container.
+  // ---------- STEP 3: Particle effects ----------
+  // Each of these is a small config object describing one particle
+  // system: how many particles, what shape/color, how they move.
+  // Swapping effects is just swapping which config gets loaded.
 
   const emberConfig = {
     fpsLimit: 60,
@@ -305,6 +291,49 @@
     background: { color: "transparent" },
   };
 
+  // Smoke: like mist, but darker, denser, and rising instead of drifting
+  // sideways — reads as smoke curling up rather than ground fog.
+  const smokeConfig = {
+    fpsLimit: 60,
+    particles: {
+      number: { value: 10 },
+      color: { value: "#4a4a52" },
+      shape: { type: "circle" },
+      opacity: { value: { min: 0.08, max: 0.25 } },
+      size: { value: { min: 50, max: 100 } },
+      move: {
+        enable: true,
+        speed: { min: 0.3, max: 0.8 },
+        direction: "top",
+        random: true,
+        straight: false,
+        outModes: { default: "out" }
+      },
+    },
+    background: { color: "transparent" },
+  };
+
+  // Snow: small white circles falling straight down with a gentle sway.
+  const snowConfig = {
+    fpsLimit: 60,
+    particles: {
+      number: { value: 60 },
+      color: { value: "#ffffff" },
+      shape: { type: "circle" },
+      opacity: { value: { min: 0.4, max: 0.9 } },
+      size: { value: { min: 1, max: 4 } },
+      move: {
+        enable: true,
+        speed: { min: 0.5, max: 1.5 },
+        direction: "bottom",
+        random: true,          // gives the side-to-side sway
+        straight: false,
+        outModes: { default: "out" }
+      },
+    },
+    background: { color: "transparent" },
+  };
+
   const leavesConfig = {
     fpsLimit: 60,
     particles: {
@@ -329,16 +358,55 @@
     background: { color: "transparent" },
   };
 
-  const effectConfigs = { embers: emberConfig, mist: mistConfig, leaves: leavesConfig };
+  // Fireflies: tiny warm dots that wander slowly with no fixed direction
+  // and pulse in and out of visibility — a twinkle/glimmer effect.
+  const firefliesConfig = {
+    fpsLimit: 60,
+    particles: {
+      number: { value: 12 },
+      color: { value: ["#fff3b0", "#ffe066"] },
+      shape: { type: "circle" },
+      opacity: {
+        value: { min: 0.1, max: 0.9 },
+        animation: { enable: true, speed: 2, sync: false }  // random twinkle timing per particle
+      },
+      size: { value: { min: 1.5, max: 3 } },
+      move: {
+        enable: true,
+        speed: { min: 0.3, max: 0.8 },
+        direction: "none",     // wanders freely, no set direction
+        random: true,
+        straight: false,
+        outModes: { default: "bounce" }  // stays within the layer, bounces at edges
+      },
+    },
+    background: { color: "transparent" },
+  };
 
-  // Keeps track of which particle instance is running in each slot,
-  // so we can destroy the old one before loading a new one.
+  const effectConfigs = {
+    embers: emberConfig,
+    mist: mistConfig,
+    smoke: smokeConfig,
+    snow: snowConfig,
+    leaves: leavesConfig,
+    fireflies: firefliesConfig,
+  };
+
+  // Tracks the currently-running particle instance for each card slot,
+  // so we can properly destroy it before loading a new one. We store
+  // the actual Container object returned by tsParticles.load() instead
+  // of trying to look it up later — much more reliable.
+  const activeContainers = { sinParticles: null, commandmentParticles: null };
+
   async function setEffect(containerId, effectName) {
-    const container = tsParticles.dom().find(c => c.id === containerId);
-    if (container) container.destroy();
-
+    if (activeContainers[containerId]) {
+      activeContainers[containerId].destroy();
+      activeContainers[containerId] = null;
+    }
     if (effectName === "none") return;
-    await tsParticles.load({ id: containerId, options: effectConfigs[effectName] });
+
+    const container = await tsParticles.load({ id: containerId, options: effectConfigs[effectName] });
+    activeContainers[containerId] = container;
   }
 
   document.getElementById("sinEffect").addEventListener("change", (e) => {
@@ -348,9 +416,9 @@
     setEffect("commandmentParticles", e.target.value);
   });
 
-  // Load the initial defaults (embers on the sin card, mist on the commandment card)
+  // Load the initial defaults (embers on the sin card, snow on the commandment card)
   setEffect("sinParticles", "embers");
-  setEffect("commandmentParticles", "mist");
+  setEffect("commandmentParticles", "snow");
 
 </script>
 
