@@ -238,11 +238,18 @@
 
     wrap.addEventListener("click", () => {
       flipped = !flipped;
-      gsap.to(flipEl, {
-        rotateY: flipped ? 180 : 0,
-        duration: 0.6,
-        ease: "power2.inOut",
-      });
+      const target = flipped ? 180 : 0;
+
+      // Two-stage flip: the card lifts slightly toward the camera and
+      // grows ~12% as it turns edge-on (the first 90 degrees), then
+      // finishes rotating while settling back to normal size and
+      // position. This masks the moment the card is genuinely edge-on
+      // (and would otherwise look like it's "squishing" to nothing)
+      // by also making it bigger and closer at exactly that instant —
+      // reads as the card being picked up and turned, not flattened.
+      const tl = gsap.timeline({ defaults: { ease: "power1.inOut" } });
+      tl.to(flipEl, { rotateY: 90, scale: 1.12, y: -14, duration: 0.3 })
+        .to(flipEl, { rotateY: target, scale: 1, y: 0, duration: 0.3 });
     });
   }
   makeFlippable("sinCard");
@@ -262,7 +269,7 @@
       shape: { type: "circle" },
       opacity: {
         value: { min: 0.2, max: 0.84 },  // slightly higher ceiling = more glow
-        animation: { enable: true, speed: 1, startValue: "max", destroy: "min" }
+        animation: { enable: true, speed: 0.45, startValue: "max", destroy: "min" }  // slowed from 1 -> more survive to the top
       },
       size: { value: { min: 1, max: 3 } },
       move: {
@@ -302,16 +309,18 @@
     background: { color: "transparent" },
   };
 
-  // Smoke: like mist, but darker, denser, and rising instead of drifting
-  // sideways — reads as smoke curling up rather than ground fog.
+  // Smoke: like mist, but rising instead of drifting sideways — reads as
+  // smoke curling up rather than ground fog. Color lightened and opacity
+  // raised from the first version, which was too dark/faint to read
+  // against the black Sin card once blurred.
   const smokeConfig = {
     fpsLimit: 60,
     particles: {
-      number: { value: 8 },
-      color: { value: "#3f3f46" },
+      number: { value: 14 },
+      color: { value: "#7a7a86" },
       shape: { type: "circle" },
-      opacity: { value: { min: 0.14, max: 0.3 } },
-      size: { value: { min: 100, max: 180 } },
+      opacity: { value: { min: 0.22, max: 0.42 } },
+      size: { value: { min: 90, max: 160 } },
       move: {
         enable: true,
         speed: { min: 0.2, max: 0.5 },
