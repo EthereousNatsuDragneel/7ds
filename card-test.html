@@ -70,13 +70,15 @@
     position: relative; /* so the particle layer can sit behind it */
   }
 
-  /* The particle canvas sits BEHIND the card, extending past its
-     edges, so embers/mist appear to emanate from around the card
-     rather than being trapped inside it. */
+  /* The particle canvas sits IN FRONT of the card, extending past its
+     edges, so embers/mist/etc. visibly drift across the card artwork.
+     pointer-events: none means clicks and mouse-tilt still reach the
+     card underneath — this layer is purely visual, it doesn't block
+     interaction. */
   .particle-layer {
     position: absolute;
-    inset: -60px;
-    z-index: -1;
+    inset: -40px;
+    z-index: 5;
     pointer-events: none;
   }
 
@@ -416,9 +418,19 @@
     setEffect("commandmentParticles", e.target.value);
   });
 
-  // Load the initial defaults (embers on the sin card, snow on the commandment card)
-  setEffect("sinParticles", "embers");
-  setEffect("commandmentParticles", "snow");
+  // ---------- THE MISSING STEP ----------
+  // Loading the tsParticles bundle script only makes the pieces
+  // (shapes, movement, emitters, etc.) AVAILABLE — it doesn't wire them
+  // up automatically. loadFull() is the one-time call that registers
+  // every plugin onto the engine. It must finish before the very first
+  // tsParticles.load() call, or nothing will render (with no visible
+  // error unless you check the browser console).
+  (async () => {
+    await loadFull(tsParticles);
+    // Load the initial defaults now that the engine is actually ready
+    setEffect("sinParticles", "embers");
+    setEffect("commandmentParticles", "snow");
+  })();
 
 </script>
 
