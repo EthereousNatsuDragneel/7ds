@@ -17,15 +17,18 @@
 
 <!-- ===== LIBRARY 3: tsParticles =====
      Spawns and animates lots of small moving shapes (embers, mist,
-     leaves, etc). This is the "bundle" build, which includes the
-     extra shape types (like emoji/character shapes) we use for the
-     leaves preset below. -->
+     leaves, bubbles, etc). This is the "bundle" build, which includes
+     the extra shape types (like emoji/character shapes) we use for the
+     leaves preset below. Note: the Static/Spark effect does NOT use
+     this library — see the hand-written canvas code further down. -->
 <script src="https://cdn.jsdelivr.net/npm/tsparticles@3.5.0/tsparticles.bundle.min.js"></script>
 
 <style>
   :root {
-    --sin-color: #ff2d55;        /* crimson glow for the SIN card */
-    --commandment-color: #2dd4ff; /* cyan glow for the COMMANDMENT card */
+    --sin-color: #ff2d55;         /* crimson glow for the Sin card front */
+    --commandment-color: #2dd4ff; /* cyan glow for the Commandment card front */
+    --wrath-color: #ff6a3d;       /* warm orange-red glow for the Wrath card back */
+    --purity-color: #ffd166;      /* warm gold glow for the Purity card back */
     --bg: #0b0b0f;
   }
 
@@ -53,6 +56,9 @@
     color: #ccc;
     font-size: 14px;
     align-items: center;
+    flex-wrap: wrap;
+    max-width: 700px;
+    justify-content: center;
   }
   select {
     background: #1a1a1a;
@@ -62,32 +68,59 @@
     padding: 4px 8px;
   }
 
+  .hint {
+    color: #888;
+    font-size: 13px;
+    max-width: 500px;
+    text-align: center;
+  }
+
   /* ---------- CARD SHELL ---------- */
   .card-wrap {
     width: 220px;
     height: 320px;
     cursor: pointer;
-    position: relative; /* so the particle layer can sit behind it */
+    position: relative; /* so the particle/canvas layer can sit correctly */
   }
 
-  /* The particle canvas sits IN FRONT of the card, extending past its
+  /* The effects layer sits IN FRONT of the card, extending past its
      edges, so embers/mist/etc. visibly drift across the card artwork.
      pointer-events: none means clicks and mouse-tilt still reach the
      card underneath — this layer is purely visual, it doesn't block
-     interaction. */
+     interaction.
+
+     opacity starts at 0 and transitions over 0.9s — this is the fade
+     in/out. Adding the "active" class (on hover) animates it to 1;
+     removing the class (mouse leaves) animates it back to 0. Same
+     transition, same duration, both directions — exactly symmetric.
+     This applies to BOTH the tsParticles effects and the hand-drawn
+     spark canvas, since both live inside this same div. */
   .particle-layer {
     position: absolute;
     inset: -40px;
     z-index: 5;
     pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.9s ease;
+  }
+  .particle-layer.active {
+    opacity: 1;
   }
 
-  /* Blurs the whole particle layer so overlapping circles melt into one
+  /* Blurs the whole layer so overlapping circles melt into one
      continuous hazy volume instead of reading as distinct dots/bubbles.
      This is what turns "floating circles" into something that actually
-     looks like mist or smoke. */
+     looks like mist or smoke. Only mist/smoke get this class. */
   .particle-layer.foggy {
     filter: blur(16px);
+  }
+
+  /* The canvas tsParticles or our own spark script draws into always
+     fills the whole layer. */
+  .particle-layer canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
   }
 
   /* This is the element GSAP will rotate for the flip.
@@ -112,10 +145,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 28px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    color: white;
     overflow: hidden;
   }
 
@@ -123,27 +152,32 @@
     transform: rotateY(180deg);
   }
 
-  /* ---------- COLOR + GLOW PER CARD ---------- */
+  /* ---------- COLOR + GLOW PER FACE ---------- */
+  /* Sin card: black/crimson back-of-card face, Wrath artwork on the flip side */
   .sin-card .card-face.front {
     background: #111;
     border: 2px solid var(--sin-color);
     box-shadow: 0 0 25px var(--sin-color), 0 0 60px rgba(255,45,85,0.35);
   }
+  .sin-card .card-face.back {
+    background: #1a0505;
+    border: 2px solid var(--wrath-color);
+    box-shadow: 0 0 25px var(--wrath-color), 0 0 60px rgba(255,106,61,0.35);
+  }
+
+  /* Commandment card: blue/cyan back-of-card face, Purity artwork on the flip side */
   .commandment-card .card-face.front {
     background: #0a1a2e;
     border: 2px solid var(--commandment-color);
     box-shadow: 0 0 25px var(--commandment-color), 0 0 60px rgba(45,212,255,0.35);
   }
-  /* the "back" faces (what you see after flipping) — just a placeholder
-     until we have real front artwork */
-  .card-face.back {
-    background: #1a1a1a;
-    border: 2px dashed #555;
-    color: #888;
-    font-size: 16px;
+  .commandment-card .card-face.back {
+    background: #2a1d00;
+    border: 2px solid var(--purity-color);
+    box-shadow: 0 0 25px var(--purity-color), 0 0 60px rgba(255,209,102,0.35);
   }
 
-  .card-face.front img {
+  .card-face img {
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -171,6 +205,8 @@
       <option value="snow">Snow</option>
       <option value="leaves">Leaves</option>
       <option value="fireflies">Fireflies</option>
+      <option value="bubbles">Bubbles</option>
+      <option value="spark">Static/Spark</option>
     </select>
     <label for="commandmentEffect" style="margin:0;">Commandment card effect:</label>
     <select id="commandmentEffect">
@@ -181,8 +217,11 @@
       <option value="snow" selected>Snow</option>
       <option value="leaves">Leaves</option>
       <option value="fireflies">Fireflies</option>
+      <option value="bubbles">Bubbles</option>
+      <option value="spark">Static/Spark</option>
     </select>
   </div>
+  <div class="hint">Hover a card to see its effect fade in. Move off and it fades back out.</div>
 
   <div class="cards-row">
 
@@ -193,7 +232,9 @@
           <div class="card-face front">
             <img src="assets/cards/SIN CARD.png" alt="Sin card back">
           </div>
-          <div class="card-face back">front art<br>goes here later</div>
+          <div class="card-face back">
+            <img src="assets/cards/WRATH CARD.png" alt="Wrath card front art">
+          </div>
         </div>
       </div>
       <label>Sin card — click to flip</label>
@@ -206,7 +247,9 @@
           <div class="card-face front">
             <img src="assets/cards/COMMANDMENT CARD.png" alt="Commandment card back">
           </div>
-          <div class="card-face back">front art<br>goes here later</div>
+          <div class="card-face back">
+            <img src="assets/cards/PURITY CARD.png" alt="Purity card front art">
+          </div>
         </div>
       </div>
       <label>Commandment card — click to flip</label>
@@ -217,9 +260,6 @@
 
 <script>
   // ---------- STEP 1: Tilt + Glare ----------
-  // VanillaTilt.init attaches the effect to every element matching this
-  // selector. max = how many degrees it tilts. speed = how fast it
-  // reacts. glare + max-glare = turns on the light-sheen streak.
   VanillaTilt.init(document.querySelectorAll(".card-wrap"), {
     max: 15,
     speed: 400,
@@ -229,8 +269,6 @@
   });
 
   // ---------- STEP 2: Flip on click ----------
-  // We track flip state per card, and use GSAP to animate the rotateY
-  // from 0 to 180 (or back) smoothly instead of it snapping instantly.
   function makeFlippable(wrapId) {
     const wrap = document.getElementById(wrapId);
     const flipEl = wrap.querySelector(".card-flip");
@@ -239,14 +277,6 @@
     wrap.addEventListener("click", () => {
       flipped = !flipped;
       const target = flipped ? 180 : 0;
-
-      // Two-stage flip: the card lifts slightly toward the camera and
-      // grows ~12% as it turns edge-on (the first 90 degrees), then
-      // finishes rotating while settling back to normal size and
-      // position. This masks the moment the card is genuinely edge-on
-      // (and would otherwise look like it's "squishing" to nothing)
-      // by also making it bigger and closer at exactly that instant —
-      // reads as the card being picked up and turned, not flattened.
       const tl = gsap.timeline({ defaults: { ease: "power1.inOut" } });
       tl.to(flipEl, { rotateY: 90, scale: 1.12, y: -14, duration: 0.3 })
         .to(flipEl, { rotateY: target, scale: 1, y: 0, duration: 0.3 });
@@ -255,34 +285,29 @@
   makeFlippable("sinCard");
   makeFlippable("commandmentCard");
 
-  // ---------- STEP 3: Particle effects ----------
-  // Each of these is a small config object describing one particle
-  // system: how many particles, what shape/color, how they move.
-  // Swapping effects is just swapping which config gets loaded.
-
+  // ---------- STEP 3: tsParticles-based effects ----------
   const emberConfig = {
     fpsLimit: 60,
     particles: {
       number: { value: 40 },
-      // Brightened ~5% (blended each color 5% toward white)
       color: { value: ["#ff5638", "#ff9038", "#ffd238"] },
       shape: { type: "circle" },
       opacity: {
-        value: { min: 0.2, max: 0.84 },  // slightly higher ceiling = more glow
-        animation: { enable: true, speed: 0.45, startValue: "max", destroy: "min" }  // slowed from 1 -> more survive to the top
+        value: { min: 0.2, max: 0.84 },
+        animation: { enable: true, speed: 0.45, startValue: "max", destroy: "min" }
       },
       size: { value: { min: 1, max: 3 } },
       move: {
         enable: true,
-        speed: { min: 1.3, max: 3.2 },  // ~30% faster than before
-        direction: "top",       // drifts upward, like heat rising
-        random: true,           // slight left/right wobble
+        speed: { min: 1.3, max: 3.2 },
+        direction: "top",
+        random: true,
         straight: false,
         outModes: { default: "destroy", top: "destroy" }
       },
     },
     emitters: {
-      position: { x: 50, y: 100 },  // spawn from the bottom of the layer
+      position: { x: 50, y: 100 },
       rate: { quantity: 2, delay: 0.15 },
       size: { width: 100, height: 0 }
     },
@@ -295,12 +320,12 @@
       number: { value: 10 },
       color: { value: "#dbe4ec" },
       shape: { type: "circle" },
-      opacity: { value: { min: 0.12, max: 0.26 } },  // higher, since blur softens perceived opacity
-      size: { value: { min: 90, max: 160 } },         // bigger + more overlap = smoother blend
+      opacity: { value: { min: 0.12, max: 0.26 } },
+      size: { value: { min: 90, max: 160 } },
       move: {
         enable: true,
         speed: { min: 0.15, max: 0.4 },
-        direction: "right",     // slow horizontal drift, like fog rolling by
+        direction: "right",
         random: true,
         straight: false,
         outModes: { default: "out" }
@@ -309,10 +334,6 @@
     background: { color: "transparent" },
   };
 
-  // Smoke: like mist, but rising instead of drifting sideways — reads as
-  // smoke curling up rather than ground fog. Color lightened and opacity
-  // raised from the first version, which was too dark/faint to read
-  // against the black Sin card once blurred.
   const smokeConfig = {
     fpsLimit: 60,
     particles: {
@@ -333,7 +354,6 @@
     background: { color: "transparent" },
   };
 
-  // Snow: small white circles falling straight down with a gentle sway.
   const snowConfig = {
     fpsLimit: 60,
     particles: {
@@ -346,7 +366,7 @@
         enable: true,
         speed: { min: 0.5, max: 1.5 },
         direction: "bottom",
-        random: true,          // gives the side-to-side sway
+        random: true,
         straight: false,
         outModes: { default: "out" }
       },
@@ -359,11 +379,6 @@
     particles: {
       number: { value: 18 },
       color: { value: ["#b5651d", "#8a9a5b", "#c2703d"] },
-      // "character" (not "char") is the correct shape type name, and its
-      // settings must live under shape.options.character — nesting it
-      // directly under shape.character (what I had before) left the
-      // library looking for settings at a path that didn't exist, which
-      // is exactly what threw the "reading 'font'" error.
       shape: {
         type: "character",
         options: {
@@ -374,13 +389,13 @@
       size: { value: { min: 12, max: 20 } },
       rotate: {
         value: { min: 0, max: 360 },
-        animation: { enable: true, speed: 8 }   // leaves spin as they fall
+        animation: { enable: true, speed: 8 }
       },
       move: {
         enable: true,
         speed: { min: 0.6, max: 1.4 },
-        direction: "bottom",    // falls downward
-        random: true,           // sways side to side while falling
+        direction: "bottom",
+        random: true,
         straight: false,
         outModes: { default: "out" }
       },
@@ -388,8 +403,6 @@
     background: { color: "transparent" },
   };
 
-  // Fireflies: tiny warm dots that wander slowly with no fixed direction
-  // and pulse in and out of visibility — a twinkle/glimmer effect.
   const firefliesConfig = {
     fpsLimit: 60,
     particles: {
@@ -398,17 +411,47 @@
       shape: { type: "circle" },
       opacity: {
         value: { min: 0.1, max: 0.9 },
-        animation: { enable: true, speed: 2, sync: false }  // random twinkle timing per particle
+        animation: { enable: true, speed: 2, sync: false }
       },
       size: { value: { min: 1.5, max: 3 } },
       move: {
         enable: true,
         speed: { min: 0.3, max: 0.8 },
-        direction: "none",     // wanders freely, no set direction
+        direction: "none",
         random: true,
         straight: false,
-        outModes: { default: "bounce" }  // stays within the layer, bounces at edges
+        outModes: { default: "bounce" }
       },
+    },
+    background: { color: "transparent" },
+  };
+
+  // Bubbles: pale, translucent circles with a brighter rim (the "stroke"
+  // option draws an outline around each particle) so they read as
+  // glassy water bubbles rather than flat dots. They rise from the
+  // bottom with a gentle wobble, same spawn technique as embers.
+  const bubblesConfig = {
+    fpsLimit: 60,
+    particles: {
+      number: { value: 20 },
+      color: { value: "#bdeeff" },
+      stroke: { width: 1.4, color: { value: "#eafcff" } },  // bright rim = the "glassy" edge
+      shape: { type: "circle" },
+      opacity: { value: { min: 0.15, max: 0.35 } },  // translucent, like real water bubbles
+      size: { value: { min: 4, max: 14 } },
+      move: {
+        enable: true,
+        speed: { min: 0.6, max: 1.6 },
+        direction: "top",       // bubbles rise
+        random: true,           // gentle side-to-side wobble as they rise
+        straight: false,
+        outModes: { default: "destroy", top: "destroy" }
+      },
+    },
+    emitters: {
+      position: { x: 50, y: 100 },  // spawn from the bottom, like rising through water
+      rate: { quantity: 1, delay: 0.25 },
+      size: { width: 100, height: 0 }
     },
     background: { color: "transparent" },
   };
@@ -420,50 +463,189 @@
     snow: snowConfig,
     leaves: leavesConfig,
     fireflies: firefliesConfig,
+    bubbles: bubblesConfig,
   };
 
-  // Tracks the currently-running particle instance for each card slot,
-  // so we can properly destroy it before loading a new one. We store
-  // the actual Container object returned by tsParticles.load() instead
-  // of trying to look it up later — much more reliable.
-  const activeContainers = { sinParticles: null, commandmentParticles: null };
+  // ---------- STEP 4: Static/Spark — hand-drawn canvas lightning ----------
+  // tsParticles can only draw filled shapes moving around — it has no
+  // concept of a jagged bolt. Real crackling electricity (the SSJ2 aura
+  // look) needs an actual line drawn with random zig-zags, redrawn in
+  // flickering bursts. We build this ourselves with the plain HTML5
+  // Canvas API — no extra library needed.
+  //
+  // The core trick is called "midpoint displacement": take a straight
+  // line, nudge its middle point sideways by a random amount, then
+  // repeat that on each new half, over and over. Each repeat uses a
+  // smaller nudge than the last. The result is a jagged fractal path
+  // that looks exactly like a bolt of electricity or a crack in glass.
+  function buildBoltPoints(x1, y1, x2, y2, displace, points) {
+    if (displace < 2) {
+      points.push([x2, y2]);
+      return;
+    }
+    const midX = (x1 + x2) / 2 + (Math.random() - 0.5) * displace;
+    const midY = (y1 + y2) / 2 + (Math.random() - 0.5) * displace;
+    buildBoltPoints(x1, y1, midX, midY, displace / 2, points);
+    buildBoltPoints(midX, midY, x2, y2, displace / 2, points);
+  }
 
-  async function setEffect(containerId, effectName) {
-    if (activeContainers[containerId]) {
-      activeContainers[containerId].destroy();
-      activeContainers[containerId] = null;
+  function drawBolt(ctx, x1, y1, x2, y2, color) {
+    const points = [[x1, y1]];
+    buildBoltPoints(x1, y1, x2, y2, 44, points);
+
+    // Pass 1: a thick, heavily blurred stroke in the bolt's color — this
+    // is the soft colored "glow" you see surrounding real electric arcs.
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 18;
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (const [x, y] of points.slice(1)) ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.restore();
+
+    // Pass 2: a thin, sharp, pure white stroke drawn right on top — this
+    // is the white-hot core that sells the "electric" look, the same
+    // way a real spark has a blinding white center inside a colored halo.
+    ctx.save();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (const [x, y] of points.slice(1)) ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const sparkAnimations = { sinParticles: null, commandmentParticles: null };
+
+  function startSparkEffect(containerId) {
+    const layerEl = document.getElementById(containerId);
+    const canvas = document.createElement("canvas");
+    canvas.width = layerEl.clientWidth;
+    canvas.height = layerEl.clientHeight;
+    layerEl.appendChild(canvas);
+    const ctx = canvas.getContext("2d");
+    const colors = ["#9be8ff", "#c68bff", "#eafcff"];
+
+    let lastFlicker = 0;
+    function loop(timestamp) {
+      // Redrawing only every ~90ms (instead of every single frame) is
+      // what makes this look like flickering electricity rather than a
+      // smoothly animated snake — real arcs strobe in short bursts.
+      if (timestamp - lastFlicker > 90) {
+        lastFlicker = timestamp;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const boltCount = 2 + Math.floor(Math.random() * 3); // 2-4 bolts per flicker
+        for (let i = 0; i < boltCount; i++) {
+          const x1 = Math.random() * canvas.width;
+          const y1 = Math.random() * canvas.height;
+          const x2 = Math.random() * canvas.width;
+          const y2 = Math.random() * canvas.height;
+          const color = colors[Math.floor(Math.random() * colors.length)];
+          drawBolt(ctx, x1, y1, x2, y2, color);
+        }
+      }
+      sparkAnimations[containerId].rafId = requestAnimationFrame(loop);
     }
 
-    // Only mist and smoke get the blur treatment — everything else
-    // (embers, snow, leaves, fireflies) should stay crisp.
+    sparkAnimations[containerId] = { canvas, rafId: requestAnimationFrame(loop) };
+  }
+
+  function stopSparkEffect(containerId) {
+    const anim = sparkAnimations[containerId];
+    if (anim) {
+      cancelAnimationFrame(anim.rafId);
+      anim.canvas.remove();
+      sparkAnimations[containerId] = null;
+    }
+  }
+
+  // ---------- STEP 5: Hover-triggered fade in/out ----------
+  // Effects (both tsParticles-based and the hand-drawn spark canvas)
+  // only run while the mouse is over the card. Each card slot remembers
+  // which effect is currently selected in its dropdown.
+
+  const selectedEffect = { sinParticles: "embers", commandmentParticles: "snow" };
+  const activeContainers = { sinParticles: null, commandmentParticles: null }; // tsParticles instances
+  const pendingDestroy = { sinParticles: null, commandmentParticles: null };
+  const FADE_MS = 900; // matches the CSS "transition: opacity 0.9s" above
+
+  async function activateSelected(containerId) {
+    const effectName = selectedEffect[containerId];
     const layerEl = document.getElementById(containerId);
     layerEl.classList.toggle("foggy", effectName === "mist" || effectName === "smoke");
 
     if (effectName === "none") return;
 
-    const container = await tsParticles.load({ id: containerId, options: effectConfigs[effectName] });
-    activeContainers[containerId] = container;
+    if (effectName === "spark") {
+      if (!sparkAnimations[containerId]) startSparkEffect(containerId);
+      return;
+    }
+
+    if (!activeContainers[containerId]) {
+      const container = await tsParticles.load({ id: containerId, options: effectConfigs[effectName] });
+      activeContainers[containerId] = container;
+    }
+  }
+
+  function teardownActive(containerId) {
+    if (activeContainers[containerId]) {
+      activeContainers[containerId].destroy();
+      activeContainers[containerId] = null;
+    }
+    if (sparkAnimations[containerId]) {
+      stopSparkEffect(containerId);
+    }
+  }
+
+  async function startEffectVisual(containerId) {
+    if (pendingDestroy[containerId]) {
+      clearTimeout(pendingDestroy[containerId]);
+      pendingDestroy[containerId] = null;
+    }
+    await activateSelected(containerId);
+    document.getElementById(containerId).classList.add("active"); // triggers 0 -> 1 fade
+  }
+
+  function stopEffectVisual(containerId) {
+    const layerEl = document.getElementById(containerId);
+    layerEl.classList.remove("active"); // triggers 1 -> 0 fade
+
+    pendingDestroy[containerId] = setTimeout(() => {
+      teardownActive(containerId);
+      pendingDestroy[containerId] = null;
+    }, FADE_MS);
+  }
+
+  document.getElementById("sinCard").addEventListener("mouseenter", () => startEffectVisual("sinParticles"));
+  document.getElementById("sinCard").addEventListener("mouseleave", () => stopEffectVisual("sinParticles"));
+  document.getElementById("commandmentCard").addEventListener("mouseenter", () => startEffectVisual("commandmentParticles"));
+  document.getElementById("commandmentCard").addEventListener("mouseleave", () => stopEffectVisual("commandmentParticles"));
+
+  async function swapIfActive(containerId) {
+    const layerEl = document.getElementById(containerId);
+    if (!layerEl.classList.contains("active")) return;
+    teardownActive(containerId);
+    await activateSelected(containerId);
   }
 
   document.getElementById("sinEffect").addEventListener("change", (e) => {
-    setEffect("sinParticles", e.target.value);
+    selectedEffect.sinParticles = e.target.value;
+    swapIfActive("sinParticles");
   });
   document.getElementById("commandmentEffect").addEventListener("change", (e) => {
-    setEffect("commandmentParticles", e.target.value);
+    selectedEffect.commandmentParticles = e.target.value;
+    swapIfActive("commandmentParticles");
   });
 
-  // ---------- THE MISSING STEP ----------
-  // Loading the tsParticles bundle script only makes the pieces
-  // (shapes, movement, emitters, etc.) AVAILABLE — it doesn't wire them
-  // up automatically. loadFull() is the one-time call that registers
-  // every plugin onto the engine. It must finish before the very first
-  // tsParticles.load() call, or nothing will render (with no visible
-  // error unless you check the browser console).
+  // ---------- Engine setup ----------
+  // loadFull() registers all of tsParticles' plugins onto the engine.
+  // Must finish before the first tsParticles.load() call.
   (async () => {
     await loadFull(tsParticles);
-    // Load the initial defaults now that the engine is actually ready
-    setEffect("sinParticles", "embers");
-    setEffect("commandmentParticles", "snow");
   })();
 
 </script>
