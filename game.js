@@ -1,31 +1,13 @@
-// ---------------------------------------------------------------------------
-// game.js -- the actual gameplay screen. Polls the server for state and
-// renders it in plain readable text (no raw JSON shown anywhere), and
-// turns each card in your hand into a clickable button that plays it.
-//
-// SERVER_URL, gameId, and myName all come from the URL query string, set
-// by index.js when it redirects here after the leader starts the game.
-// This means whatever server address you typed on the entry screen (your
-// own computer, an ngrok tunnel, a LAN IP, etc) carries through
-// automatically -- there's nothing to re-enter on this page.
-// ---------------------------------------------------------------------------
+// game.js -- Sins & Commandments gameplay screen
 
 const params = new URLSearchParams(window.location.search);
 const gameId = params.get('gid');
 const myName = params.get('name');
-
-// Falls back to localhost only if this page was somehow opened directly
-// without going through index.html's redirect (e.g. a stale bookmark) --
-// normal play always has ?server=... already filled in by index.js.
 const SERVER_URL = (params.get('server') || 'http://127.0.0.1:5000').replace(/\/+$/, '');
 
 // ---------------------------------------------------------------------------
 // Sound effects
 // ---------------------------------------------------------------------------
-// Card-place sounds use .ogg -- if your actual files have a different
-// extension (the original request said ".aug", which isn't a real audio
-// format, so this assumes it was a typo for ".ogg"), just change the 4
-// filenames below to match.
 const CARD_PLACE_SOUNDS = [
   'assets/sfx/card-place-1.ogg',
   'assets/sfx/card-place-2.ogg',
@@ -41,70 +23,36 @@ const PACK_OPEN_SOUNDS = [
   'assets/sfx/cards-pack-open-2.ogg',
 ];
 
-// Preload every sound once as a reusable <audio> element. We don't reuse
-// the SAME element for overlapping/rapid-fire plays though -- see
-// playSound() below, which clones a fresh Audio() each time so quick
-// successive sounds don't cut each other off.
 const SOUND_CACHE = {};
 [...CARD_PLACE_SOUNDS, ...DRAW_SOUNDS, ...PACK_OPEN_SOUNDS].forEach((src) => {
-  const audio = new Audio(src);
-  audio.preload = 'auto';
-  SOUND_CACHE[src] = audio;
+  const a = new Audio(src);
+  a.preload = 'auto';
+  SOUND_CACHE[src] = a;
 });
 
 function pickRandom(list) {
   return list[Math.floor(Math.random() * list.length)];
 }
 
-// Plays one sound from `list` at random. Clones the cached element so
-// overlapping calls (rapid-fire card sounds) don't interrupt each other --
-// reusing one shared <audio> element would restart-and-cut-off on every
-// call instead of layering naturally.
 function playSound(list) {
   const src = pickRandom(list);
-  const cached = SOUND_CACHE[src];
-  const node = cached ? cached.cloneNode(true) : new Audio(src);
-  // Swallow play() rejections quietly -- browsers block autoplay before
-  // any user interaction, which can briefly happen right as the page
-  // loads; once the player has clicked anything at all, this won't fire.
+  const node = (SOUND_CACHE[src] ? SOUND_CACHE[src].cloneNode(true) : new Audio(src));
   node.play().catch(() => {});
 }
 
-function playPackOpenSound() {
-  playSound(PACK_OPEN_SOUNDS);
-}
+function playPackOpenSound() { playSound(PACK_OPEN_SOUNDS); }
 
-// A randomized gap (ms) between two consecutive sounds in a burst --
-// shared by both the multi-card-play case (greed) and the multi-card-
-// draw case (gluttony etc), so neither ever sounds metronomic.
-function randomGap() {
-  return 60 + Math.random() * 160; // ~60-220ms
-}
+function randomGap() { return 60 + Math.random() * 160; }
 
-// Tracks the highest event id already turned into a sound, so repeated
-// polls (which always return the same recent-events window) never
-// double-play a sound for something already handled. Starts at -1 (no
-// events processed yet) rather than 0, since event ids start at 1.
 let lastProcessedEventId = -1;
 
-// Consumes state.events (in id order) and triggers sound for each new
-// one. All NEW events arriving in a single poll are treated as one
-// "burst" and staggered together -- e.g. greed playing 3 cards shows up
-// as 3 separate events (1 play_sin + 2 play_commandment) that all
-// arrive in the same poll response, and should sound like 3 quick,
-// unevenly-spaced taps, not 3 simultaneous sounds or one sound per
-// 1.5s poll cycle. A `draw` event with count > 1 (e.g. gluttony's 3
-// commandment cards at once) staggers its own multiple sounds the same
-// way, inline within the burst.
 function processSoundEvents(events) {
-  if (!events || events.length === 0) return;
-
-  const newEvents = events.filter((ev) => ev.id > lastProcessedEventId);
-  if (newEvents.length === 0) return;
-  lastProcessedEventId = Math.max(...newEvents.map((ev) => ev.id));
-
+  if (!events || !events.length) return;
+  const newEvs = events.filter((e) => e.id > lastProcessedEventId);
+  if (!newEvs.length) return;
+  lastProcessedEventId = Math.max(...newEvs.map((e) => e.id));
   let elapsed = 0;
-  for (const ev of newEvents) {
+  for (const ev of newEvs) {
     if (ev.type === 'play_commandment' || ev.type === 'play_sin') {
       setTimeout(() => playSound(CARD_PLACE_SOUNDS), elapsed);
       elapsed += randomGap();
@@ -118,177 +66,153 @@ function processSoundEvents(events) {
   }
 }
 
-// Tracks whether the bottom-of-hand UI is showing the normal card list or
-// the greed follow-up picker. Local UI state only -- the server doesn't
-// know about it until a card is actually submitted. (Envy no longer has
-// a picker: it auto-targets the next player, same as sloth/lust/gluttony.)
-let mode = 'normal'; // 'normal' | 'greed_followup' | 'pride_commandment' | 'react_pride_commandment'
-let greedSelected = []; // up to 2 indices into hand_blue chosen for greed's follow-up
-// When pride needs a commandment card (proactive or reactive), we store
-// what kind of request to fire after the player picks the card.
-let prideContext = null; // null | 'proactive' | 'reactive'
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function $(id) { return document.getElementById(id); }
 
-// Human-readable labels for colors, since the server's internal names
-// (e.g. "bluish_green") aren't what a player should see on a button.
-const COLOR_LABELS = {
-  blue: 'blue',
-  orange: 'orange',
-  bluish_green: 'green',
-  reddish_purple: 'purple',
-};
-
-function $(id) {
-  return document.getElementById(id);
-}
-
-function cardLabel(card) {
-  return `${COLOR_LABELS[card.color] || card.color} ${card.commandment}`;
-}
-
-// ----- API helper -----
-async function callApi(path, method, body) {
-  let res;
-  try {
-    res = await fetch(`${SERVER_URL}${path}`, {
-      method,
-      headers: {
-        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        // Free ngrok URLs show an HTML warning page on first contact
-        // instead of forwarding the request -- this header tells ngrok
-        // to skip that and forward straight through. Harmless to send
-        // to any other kind of server.
-        'ngrok-skip-browser-warning': 'true',
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-  } catch (err) {
-    throw new Error(`Could not reach the server at ${SERVER_URL}.`);
-  }
-  let data;
-  try {
-    data = await res.json();
-  } catch (err) {
-    throw new Error(
-      'The server responded with something unexpected (not game data). ' +
-      'If this is an ngrok address, open it directly in a new browser ' +
-      'tab once and click through any ngrok warning page, then retry.'
-    );
-  }
-  if (!res.ok) {
-    throw new Error(data.error || 'Something went wrong.');
-  }
+async function callApi(path, method = 'GET', body = null) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(SERVER_URL + path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Server error');
   return data;
 }
 
-function setMessage(text) {
-  $('messageText').textContent = text || '';
+function setMessage(msg) {
+  $('messageText').textContent = msg;
 }
 
-// ----- fetching state -----
+function cardLabel(card) {
+  return `${card.commandment} (${card.color})`;
+}
+
+function cardMatches(card, state) {
+  if (state.wild_open || !state.last_played) return true;
+  return card.color === state.last_played.color ||
+         card.commandment === state.last_played.commandment;
+}
+
 async function fetchState() {
-  return callApi(`/game/${gameId}/state?name=${encodeURIComponent(myName)}`, 'GET');
+  return callApi(`/game/${gameId}/state?name=${encodeURIComponent(myName)}`);
 }
 
-// ----- rendering -----
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
 function render(state) {
-  // --- table info ---
-  $('lastPlayed').textContent = state.last_played
-    ? cardLabel(state.last_played)
-    : (state.wild_open ? 'open (any card is playable)' : '—');
+  // Table state
+  // Show the single most-recent card on the table.
+  // If a commandment was last played, show its name and color.
+  // If a sin was last played (making the table wild/open), show the sin name.
+  // If the table is wild-open at game start with nothing played yet, show "Open".
+  let lastCardText = '—';
+  if (state.last_played && state.last_sin_played) {
+    // Both exist -- whichever is newer is the true last card. We can't know
+    // which is newer from the snapshot alone, but the server sets wild_open=true
+    // after any sin play and wild_open=false after any commandment play, so:
+    // wild_open=true means a sin was played more recently than any commandment.
+    lastCardText = state.wild_open
+      ? `${state.last_sin_played.sin} (by ${state.last_sin_played.by}) — table is open`
+      : `${state.last_played.commandment} (${state.last_played.color})`;
+  } else if (state.last_played) {
+    lastCardText = `${state.last_played.commandment} (${state.last_played.color})`;
+  } else if (state.last_sin_played) {
+    lastCardText = `${state.last_sin_played.sin} (by ${state.last_sin_played.by}) — table is open`;
+  } else if (state.wild_open) {
+    lastCardText = 'Open (game start)';
+  }
+  $('lastPlayed').textContent = lastCardText;
 
-  $('lastSinPlayed').textContent = state.last_sin_played
-    ? `${state.last_sin_played.by} played ${state.last_sin_played.sin}`
-    : '—';
-
-  $('turnOrder').textContent = state.turn_order
-    .filter((name) => {
-      const p = state.players.find((pl) => pl.name === name);
-      return p && !p.eliminated && !p.has_won;
-    })
-    .join(' → ');
+  // Turn order -- only active players
+  const activePlayers = new Set(
+    state.players.filter((p) => !p.eliminated && !p.has_won).map((p) => p.name)
+  );
+  $('turnOrder').textContent = state.turn_order.filter((n) => activePlayers.has(n)).join(' → ');
   $('currentTurn').textContent = state.finished ? '—' : (state.current_player || '—');
 
-  // --- other players ---
+  // Other players
   const list = $('otherPlayers');
   list.innerHTML = '';
   for (const p of state.players) {
     if (p.name === myName) continue;
     const li = document.createElement('li');
-    let line = `${p.name}: ${p.blue_count} commandment card(s), ${p.black_count} sin card(s)`;
-    if (p.used_sins.length > 0) {
-      line += ` — used: ${p.used_sins.join(', ')}`;
-    }
-    if (p.eliminated) {
-      line += ' — eliminated';
-    }
-    if (p.has_won) {
-      line += ' — won, now spectating';
-    }
-    if (p.pending_lust_burns > 0) {
-      line += ` — owes ${p.pending_lust_burns} sin burn(s)`;
-    }
-    if (p.pride_immune) {
-      line += ' — immune (pride)';
-    }
+    let line = `${p.name}: ${p.blue_count} commandment(s), ${p.black_count} sin(s)`;
+    if (p.used_sins.length > 0) line += ` — used: ${p.used_sins.join(', ')}`;
+    if (p.restrictions.length > 0) line += ` — restricted: ${p.restrictions.join(', ')}`;
+    if (p.eliminated) line += ' — eliminated';
+    if (p.has_won) line += ' — won';
+    if (p.pride_immune) line += ' — pride immune';
     li.textContent = line;
     list.appendChild(li);
   }
 
-  // --- my own spectator notice (eliminated OR already won) ---
   const myInfo = state.your_hand;
-  if (myInfo) {
-    $('myUsedSins').textContent = myInfo.used_sins.length > 0
-      ? `Sins you've used: ${myInfo.used_sins.join(', ')}`
-      : "Sins you've used: none yet";
-  } else {
-    $('myUsedSins').textContent = '';
-  }
+  if (!myInfo) return;
 
-  if (myInfo && myInfo.eliminated) {
+  // Used sins
+  $('myUsedSins').textContent = myInfo.used_sins.length > 0
+    ? `Sins used: ${myInfo.used_sins.join(', ')}`
+    : 'Sins used: none yet';
+
+  // Spectating
+  if (myInfo.eliminated || myInfo.has_won) {
     $('spectatorNotice').style.display = '';
-    $('spectatorText').textContent = "You've been eliminated. You can keep watching the game.";
-  } else if (myInfo && myInfo.has_won && !state.finished) {
-    $('spectatorNotice').style.display = '';
-    $('spectatorText').textContent = "You've already won! You can keep watching the rest of the game.";
-  } else {
-    $('spectatorNotice').style.display = 'none';
-  }
-
-  // --- whose turn is it ---
-  const isSpectating = myInfo && (myInfo.eliminated || myInfo.has_won);
-  const isMyTurn = !state.finished && state.current_player === myName && myInfo && !isSpectating;
-  $('myTurnNotice').style.display = isMyTurn ? '' : 'none';
-
-  // --- game over handling ---
-  if (state.finished) {
-    $('gameOverSection').style.display = '';
-    if (state.winners.length === 1) {
-      $('gameOverText').textContent = state.winners[0] === myName
-        ? 'You win!'
-        : `${state.winners[0]} wins!`;
-      $('gameOverDetails').textContent = '';
-    } else if (state.winners.length > 1) {
-      const iWon = state.winners.includes(myName);
-      $('gameOverText').textContent = iWon ? 'You won!' : 'Game over!';
-      $('gameOverDetails').textContent = `Winners, in order: ${state.winners.join(', ')}`;
-    } else {
-      $('gameOverText').textContent = 'The game has ended.';
-      $('gameOverDetails').textContent = '';
-    }
-    renderRematchArea(state);
-
-    // Hide all the active-play UI once the game's over.
+    $('spectatorText').textContent = myInfo.has_won ? 'You won! Spectating...' : 'You were eliminated. Spectating...';
+    $('myTurnNotice').style.display = 'none';
     $('myBlueCards').innerHTML = '';
     $('mySinCards').innerHTML = '';
     $('noMovesSection').style.display = 'none';
+    $('turnContextBanner').style.display = 'none';
+    $('prideFollowupSection').style.display = 'none';
     $('greedFollowupSection').style.display = 'none';
+    renderGameOver(state);
     return;
-  } else {
-    $('gameOverSection').style.display = 'none';
   }
+  $('spectatorNotice').style.display = 'none';
 
-  // --- my hand ---
+  // Game over
+  if (state.finished) {
+    renderGameOver(state);
+    renderHand(state, false);
+    return;
+  }
+  $('gameOverSection').style.display = 'none';
+
+  const isMyTurn = state.current_player === myName;
+  $('myTurnNotice').style.display = isMyTurn ? '' : 'none';
+
+  // Defer to special modes
+  if (mode === 'pride_followup') {
+    renderPrideFollowup(state);
+    return;
+  }
+  if (mode === 'greed_followup') {
+    $('greedFollowupSection').style.display = '';
+    renderGreedChoices(state);
+    $('prideFollowupSection').style.display = 'none';
+    return;
+  }
+  $('greedFollowupSection').style.display = 'none';
+  $('prideFollowupSection').style.display = 'none';
+
   renderHand(state, isMyTurn);
+}
+
+function renderGameOver(state) {
+  if (!state.finished) return;
+  $('gameOverSection').style.display = '';
+  $('gameOverText').textContent = state.winners.includes(myName)
+    ? '🎉 You won!'
+    : state.losers.includes(myName)
+    ? '💀 You were eliminated.'
+    : 'Game over.';
+  $('gameOverDetails').textContent = `Winners: ${state.winners.join(', ')} | Losers: ${state.losers.join(', ')}`;
+  renderRematchArea(state);
 }
 
 function renderRematchArea(state) {
@@ -301,9 +225,8 @@ function renderRematchArea(state) {
       try {
         await callApi(`/game/${gameId}/rematch`, 'POST', { name: myName });
         playPackOpenSound();
-      } catch (err) {
-        setMessage(err.message);
-      }
+        setMessage('');
+      } catch (err) { setMessage(err.message); }
     });
     area.appendChild(btn);
   } else {
@@ -317,467 +240,371 @@ function renderHand(state, isMyTurn) {
   const myInfo = state.your_hand;
   const blueDiv = $('myBlueCards');
   const sinDiv = $('mySinCards');
+  const banner = $('turnContextBanner');
   blueDiv.innerHTML = '';
   sinDiv.innerHTML = '';
+  banner.style.display = 'none';
+  $('noMovesSection').style.display = 'none';
 
-  const isSpectating = myInfo && (myInfo.eliminated || myInfo.has_won);
-  if (!myInfo || isSpectating) {
-    $('noMovesSection').style.display = 'none';
-    $('greedFollowupSection').style.display = 'none';
-    $('lustBurnSection').style.display = 'none';
-    $('reactionSection').style.display = 'none';
-    $('prideCommandmentSection').style.display = 'none';
+  if (!myInfo || myInfo.eliminated || myInfo.has_won) return;
+  if (!isMyTurn) {
+    // Show cards but disabled
+    renderBlueCards(myInfo, state, false);
+    renderSinCards(myInfo, state, false, null);
     return;
   }
 
-  // Lust burns are highest priority -- resolve before anything else.
-  if (isMyTurn && myInfo.pending_lust_burns > 0) {
-    $('noMovesSection').style.display = 'none';
-    $('greedFollowupSection').style.display = 'none';
-    $('reactionSection').style.display = 'none';
-    $('prideCommandmentSection').style.display = 'none';
-    renderLustBurnPicker(myInfo);
-    return;
-  }
-  $('lustBurnSection').style.display = 'none';
+  // Determine what mode we're in based on server state
+  const myRestriction = myInfo.restrictions.length > 0 ? myInfo.restrictions[0] : null;
+  const gluttonyWindow = state.last_gluttony && state.last_gluttony.target === myName;
 
-  // Sloth reaction: it's my turn but I have a pending skip to resolve first.
-  // Show wrath/pride/accept options instead of the normal hand.
-  // BUT: if we're already in the pride commandment picker (player chose
-  // pride from the reaction menu and is now picking a card), don't
-  // override that UI -- the server still reports pending_sloth_reaction
-  // until the react_pride call completes, so without this guard every
-  // 1.5s poll would snap the player back to the reaction menu.
-  const hasPendingSloth = isMyTurn && myInfo.pending_sloth_reaction;
-  const hasPendingReaction = isMyTurn && state.pending_reaction && state.pending_reaction.target === myName;
-  if ((hasPendingSloth || hasPendingReaction) && mode !== 'react_pride_commandment' && mode !== 'pride_commandment') {
-    $('noMovesSection').style.display = 'none';
-    $('greedFollowupSection').style.display = 'none';
-    $('prideCommandmentSection').style.display = 'none';
-    renderReactionPicker(state, myInfo);
-    return;
-  }
-  $('reactionSection').style.display = 'none';
-
-  // While picking a pride commandment card or greed follow-ups,
-  // hide the normal hand buttons.
-  if (mode === 'pride_commandment' || mode === 'react_pride_commandment') {
-    $('greedFollowupSection').style.display = 'none';
-    return;
-  }
-  $('prideCommandmentSection').style.display = 'none';
-
-  if (mode === 'greed_followup') {
+  if (myRestriction === 'sloth') {
+    banner.style.display = '';
+    banner.textContent = 'SLOTH RESTRICTION: You may play wrath, use pride, or accept the skip. No commandments.';
+    renderSinCards(myInfo, state, true, 'sloth');
+    // Accept button
+    const acceptBtn = document.createElement('button');
+    acceptBtn.textContent = 'Accept skip (take the sloth penalty)';
+    acceptBtn.addEventListener('click', () => acceptTurn());
+    sinDiv.appendChild(acceptBtn);
     return;
   }
 
-  // --- commandment card buttons ---
+  if (myRestriction === 'lust') {
+    banner.style.display = '';
+    banner.textContent = 'LUST RESTRICTION: You must play a sin card (it burns with no effect, unless you use wrath or pride). No commandments.';
+    renderSinCards(myInfo, state, true, 'lust');
+    return;
+  }
+
+  if (gluttonyWindow) {
+    banner.style.display = '';
+    banner.textContent = 'GLUTTONY WINDOW: You may play wrath (undo + double back) or pride (undo + immunity) as your first card, or play normally.';
+  }
+
+  // Normal turn (or gluttony window — wrath/pride enabled in sin section)
+  renderBlueCards(myInfo, state, true);
+  renderSinCards(myInfo, state, true, gluttonyWindow ? 'gluttony_window' : null);
+
+  // Forced draw if no valid moves
+  const hasValidBlue = myInfo.hand_blue.some((c) => cardMatches(c, state));
+  const hasPlayableSin = myInfo.hand_sins.some((s) =>
+    !myInfo.used_sins.includes(s) && (s !== 'wrath' || gluttonyWindow)
+  );
+  if (!hasValidBlue && !hasPlayableSin) {
+    $('noMovesSection').style.display = '';
+  }
+}
+
+function renderBlueCards(myInfo, state, enabled) {
+  const blueDiv = $('myBlueCards');
   for (const card of myInfo.hand_blue) {
     const btn = document.createElement('button');
     btn.textContent = cardLabel(card);
-    btn.disabled = !isMyTurn || !cardMatches(card, state);
+    const valid = cardMatches(card, state);
+    btn.disabled = !enabled || !valid;
     btn.addEventListener('click', () => playCommandment(card));
     blueDiv.appendChild(btn);
   }
+}
 
-  // --- sin card buttons ---
+function renderSinCards(myInfo, state, enabled, context) {
+  // context: null | 'sloth' | 'lust' | 'gluttony_window'
+  const sinDiv = $('mySinCards');
   for (const sin of myInfo.hand_sins) {
-    const btn = document.createElement('button');
     const alreadyUsed = myInfo.used_sins.includes(sin);
-    btn.textContent = alreadyUsed ? `${sin} (already used)` : sin;
-    // Wrath is only usable when you have a pending reaction to resolve
-    // (on your own turn now -- no longer an out-of-turn interrupt).
-    if (sin === 'wrath') {
-      const canReactWrath = hasPendingReaction && state.pending_reaction.can_wrath;
-      btn.disabled = !canReactWrath || alreadyUsed;
+    const btn = document.createElement('button');
+    let label = sin;
+    let disabled = !enabled || alreadyUsed;
+    let clickHandler = null;
+
+    if (alreadyUsed) {
+      label = `${sin} (already used)`;
+    } else if (context === 'sloth') {
+      // Sloth restriction: only wrath and pride are allowed
+      if (sin === 'wrath') {
+        label = 'Wrath — redirect 2 sloth skips back to thrower';
+        clickHandler = () => playSinUnderRestriction('wrath');
+      } else if (sin === 'pride') {
+        label = 'Pride — cancel skip, gain immunity, play a free card';
+        clickHandler = () => startPrideFollowup('restriction_sloth');
+      } else {
+        disabled = true; // can't play other sins under sloth
+        label = `${sin} (not allowed under sloth)`;
+      }
+    } else if (context === 'lust') {
+      // Lust restriction: must play a sin (burns with no effect unless wrath/pride)
+      if (sin === 'wrath') {
+        label = 'Wrath — redirect 2 lust restrictions back to thrower';
+        clickHandler = () => playSinUnderRestriction('wrath');
+      } else if (sin === 'pride') {
+        label = 'Pride — cancel lust restriction, gain immunity, play a free card';
+        clickHandler = () => startPrideFollowup('restriction_lust');
+      } else {
+        label = `${sin} — burn (no effect, satisfies lust)`;
+        clickHandler = () => playSinUnderRestriction(sin);
+      }
+    } else if (context === 'gluttony_window') {
+      // Gluttony window: wrath/pride have special roles
+      if (sin === 'wrath') {
+        label = 'Wrath — undo gluttony cards, double back to thrower';
+        clickHandler = () => playSinNormal('wrath');
+      } else if (sin === 'pride') {
+        label = 'Pride — undo gluttony cards, gain immunity, play a free card';
+        clickHandler = () => startPrideFollowup('gluttony');
+      } else {
+        label = `${sin} (play normally — closes gluttony window)`;
+        clickHandler = () => playSin(sin);
+      }
     } else {
-      btn.disabled = !isMyTurn || alreadyUsed;
+      // Normal turn
+      if (sin === 'wrath') {
+        disabled = true;
+        label = 'Wrath (only usable under restriction or after gluttony)';
+      } else if (sin === 'pride') {
+        label = 'Pride (play + follow with any card)';
+        clickHandler = () => startPrideFollowup('normal');
+      } else if (sin === 'greed') {
+        label = 'Greed (play + optional follow-up cards)';
+        clickHandler = () => enterGreedFollowupMode();
+      } else {
+        clickHandler = () => playSin(sin);
+      }
     }
-    btn.addEventListener('click', () => onSinButtonClicked(sin));
+
+    if (!disabled && clickHandler) btn.addEventListener('click', clickHandler);
+    btn.disabled = disabled;
+    btn.textContent = label;
     sinDiv.appendChild(btn);
   }
-
-  // --- no legal move at all ---
-  // Check for TRULY playable sins (not ones already used that somehow
-  // ended up in hand, and not wrath unless there's an active pending reaction).
-  const hasValidBlue = myInfo.hand_blue.some((c) => cardMatches(c, state));
-  const hasPlayableSin = myInfo.hand_sins.some((s) => {
-    if (myInfo.used_sins.includes(s)) return false;
-    if (s === 'wrath') {
-      // wrath is only playable when there's a pending reaction targeting this player
-      return hasPendingReaction && state.pending_reaction.can_wrath;
-    }
-    return true;
-  });
-  if (isMyTurn && !hasValidBlue && !hasPlayableSin) {
-    $('noMovesSection').style.display = '';
-  } else {
-    $('noMovesSection').style.display = 'none';
-  }
-
-  $('greedFollowupSection').style.display = 'none';
 }
 
-function cardMatches(card, state) {
-  if (state.wild_open || !state.last_played) return true;
-  return card.color === state.last_played.color || card.commandment === state.last_played.commandment;
-}
-
-// ----- playing cards -----
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
 async function playCommandment(card) {
   try {
     await callApi(`/game/${gameId}/play`, 'POST', {
-      name: myName,
-      type: 'com',
-      value: card.commandment,
-      color: card.color,
+      name: myName, type: 'com',
+      value: card.commandment, color: card.color,
+      extra_cards: [],
     });
     setMessage('');
-  } catch (err) {
-    setMessage(err.message);
-  }
+  } catch (err) { setMessage(err.message); }
 }
 
-function onSinButtonClicked(sin) {
-  if (sin === 'greed') {
-    enterGreedFollowupMode();
-    return;
-  }
-  // Pride always requires a commandment card -- show the picker before submitting.
-  if (sin === 'pride') {
-    prideContext = 'proactive';
-    enterPrideCommandmentMode();
-    return;
-  }
-  // Wrath on your own turn means reacting to a pending punishment.
-  if (sin === 'wrath') {
-    reactWrath();
-    return;
-  }
-  playSin(sin);
-}
-
-async function playSin(sin) {
+async function playSin(sinName) {
   try {
-    await callApi(`/game/${gameId}/play`, 'POST', { name: myName, type: 'sin', value: sin });
+    await callApi(`/game/${gameId}/play`, 'POST', {
+      name: myName, type: 'sin', value: sinName, extra_cards: [],
+    });
     setMessage('');
-    mode = 'normal';
-  } catch (err) {
-    setMessage(err.message);
-  }
+  } catch (err) { setMessage(err.message); }
 }
 
-// ----- greed follow-up picker -----
-function enterGreedFollowupMode() {
-  mode = 'greed_followup';
-  greedSelected = [];
-  $('myBlueCards').innerHTML = '';
-  $('mySinCards').innerHTML = '';
-  $('noMovesSection').style.display = 'none';
-
-  $('greedFollowupSection').style.display = '';
-  renderGreedChoicesFromLastState();
+async function playSinNormal(sinName) {
+  // Used for wrath/pride in gluttony window (wrath has no extra_cards)
+  try {
+    await callApi(`/game/${gameId}/play`, 'POST', {
+      name: myName, type: 'sin', value: sinName, extra_cards: [],
+    });
+    setMessage('');
+  } catch (err) { setMessage(err.message); }
 }
 
-// Re-render uses the most recent poll's state, cached here so the picker
-// can redraw itself after every selection without re-fetching.
+async function playSinUnderRestriction(sinName) {
+  // Wrath, pride (handled by pride followup), or burn under lust
+  try {
+    await callApi(`/game/${gameId}/play`, 'POST', {
+      name: myName, type: 'sin', value: sinName, extra_cards: [],
+    });
+    setMessage('');
+  } catch (err) { setMessage(err.message); }
+}
+
+async function acceptTurn() {
+  try {
+    await callApi(`/game/${gameId}/accept_turn`, 'POST', { name: myName });
+    setMessage('');
+  } catch (err) { setMessage(err.message); }
+}
+
+$('forcedDrawBtn').addEventListener('click', async () => {
+  try {
+    await callApi(`/game/${gameId}/forced_draw`, 'POST', { name: myName });
+    setMessage('');
+  } catch (err) { setMessage(err.message); }
+});
+
+// ---------------------------------------------------------------------------
+// Pride follow-up card picker
+// ---------------------------------------------------------------------------
+// prideContext tracks what kind of pride play we're completing:
+//   'normal'           -- proactive pride on a normal turn
+//   'restriction_sloth' -- pride under sloth restriction
+//   'restriction_lust'  -- pride under lust restriction  
+//   'gluttony'          -- pride as first card after gluttony
+let mode = 'normal'; // 'normal' | 'pride_followup' | 'greed_followup'
+let prideContext = null;
 let lastKnownState = null;
 
-function renderGreedChoicesFromLastState() {
+function startPrideFollowup(context) {
+  prideContext = context;
+  mode = 'pride_followup';
+  // Immediately render the picker with the last known state
+  if (lastKnownState) renderPrideFollowup(lastKnownState);
+}
+
+function renderPrideFollowup(state) {
+  $('greedFollowupSection').style.display = 'none';
+  $('noMovesSection').style.display = 'none';
+  $('myBlueCards').innerHTML = '';
+  $('mySinCards').innerHTML = '';
+  $('turnContextBanner').style.display = 'none';
+
+  const section = $('prideFollowupSection');
+  section.style.display = '';
+  const myInfo = state.your_hand;
+
+  const contextLabels = {
+    normal: 'Pride played — choose any card to play alongside it (free/wild):',
+    restriction_sloth: 'Pride (sloth) — skip cancelled! Choose any card to play as your free follow-up:',
+    restriction_lust: 'Pride (lust) — lust cancelled! Choose any card to play as your free follow-up:',
+    gluttony: 'Pride (gluttony) — cards undone! Choose any card to play as your free follow-up:',
+  };
+  $('prideFollowupPrompt').textContent = contextLabels[prideContext] || 'Choose a follow-up card:';
+
+  const blueDiv = $('prideFollowupBlueCards');
+  const sinDiv = $('prideFollowupSinCards');
+  blueDiv.innerHTML = '';
+  sinDiv.innerHTML = '';
+
+  for (const card of myInfo.hand_blue) {
+    const btn = document.createElement('button');
+    btn.textContent = cardLabel(card);
+    btn.addEventListener('click', () => confirmPrideFollowup({ type: 'com', value: card.commandment, color: card.color }));
+    blueDiv.appendChild(btn);
+  }
+
+  for (const sin of myInfo.hand_sins) {
+    if (myInfo.used_sins.includes(sin)) continue;
+    if (sin === 'wrath') continue; // can't follow pride with wrath
+    if (sin === 'pride') continue; // can't chain pride
+    const btn = document.createElement('button');
+    btn.textContent = `${sin} (play as follow-up)`;
+    btn.addEventListener('click', () => confirmPrideFollowup({ type: 'sin', value: sin }));
+    sinDiv.appendChild(btn);
+  }
+
+  if (myInfo.hand_blue.length === 0 && sinDiv.children.length === 0) {
+    const p = document.createElement('p');
+    p.textContent = 'No cards available for follow-up.';
+    blueDiv.appendChild(p);
+  }
+}
+
+async function confirmPrideFollowup(followupCard) {
+  // Determine which sin name to play (always 'pride')
+  // The server expects the 'pride' sin play with extra_cards = [followupCard]
+  try {
+    await callApi(`/game/${gameId}/play`, 'POST', {
+      name: myName,
+      type: 'sin',
+      value: 'pride',
+      extra_cards: [followupCard],
+    });
+    setMessage('');
+  } catch (err) { setMessage(err.message); }
+  exitSpecialMode();
+}
+
+$('cancelPrideFollowupBtn').addEventListener('click', exitSpecialMode);
+
+// ---------------------------------------------------------------------------
+// Greed follow-up card picker
+// ---------------------------------------------------------------------------
+let greedSelected = []; // indices into hand_blue
+
+function enterGreedFollowupMode() {
+  greedSelected = [];
+  mode = 'greed_followup';
   if (lastKnownState) renderGreedChoices(lastKnownState);
 }
 
-// greedSelected now tracks the INDEX of each chosen card within
-// your_hand.hand_blue, not its value -- this is what makes duplicate
-// cards (e.g. two separate "orange truth" cards) independently
-// selectable instead of being treated as interchangeable. The server
-// itself still only cares about {value, color} (it has no concept of
-// "which specific copy"), so we translate index -> {value, color} only
-// at the moment we actually send the request.
 function renderGreedChoices(state) {
+  const myInfo = state.your_hand;
   const container = $('greedFollowupChoices');
   container.innerHTML = '';
+  const atLimit = greedSelected.length >= 2;
 
-  const myInfo = state.your_hand;
-  const atSelectionLimit = greedSelected.length >= 2;
-
-  myInfo.hand_blue.forEach((card, index) => {
-    const isPicked = greedSelected.includes(index);
+  myInfo.hand_blue.forEach((card, idx) => {
+    const isPicked = greedSelected.includes(idx);
     const btn = document.createElement('button');
-    btn.textContent = cardLabel(card) + (isPicked ? ' (selected)' : '');
-    // A selected card stays clickable so the player can deselect it.
-    // An unselected card becomes disabled once 2 are already chosen,
-    // since greed allows at most 2 follow-up cards.
-    btn.disabled = !isPicked && atSelectionLimit;
-    btn.addEventListener('click', () => toggleGreedCard(index, state));
+    btn.textContent = cardLabel(card) + (isPicked ? ' ✓' : '');
+    btn.disabled = !isPicked && atLimit;
+    btn.addEventListener('click', () => toggleGreedCard(idx, state));
     container.appendChild(btn);
   });
 
-  $('greedSelectedText').textContent =
-    greedSelected.length === 0
-      ? 'none'
-      : greedSelected.map((i) => cardLabel(myInfo.hand_blue[i])).join(', ');
+  $('greedSelectedText').textContent = greedSelected.length === 0
+    ? 'none'
+    : greedSelected.map((i) => cardLabel(myInfo.hand_blue[i])).join(', ');
 }
 
-function toggleGreedCard(index, state) {
-  const pos = greedSelected.indexOf(index);
-  if (pos >= 0) {
-    greedSelected.splice(pos, 1);
-  } else if (greedSelected.length < 2) {
-    greedSelected.push(index);
-  }
+function toggleGreedCard(idx, state) {
+  const pos = greedSelected.indexOf(idx);
+  if (pos >= 0) greedSelected.splice(pos, 1);
+  else if (greedSelected.length < 2) greedSelected.push(idx);
   renderGreedChoices(state);
 }
 
 $('confirmGreedBtn').addEventListener('click', async () => {
   try {
     const myInfo = lastKnownState.your_hand;
-    // Translate the chosen INDICES into the {value, color} shape the
-    // server expects, one per selected card -- this is also where
-    // duplicates get resolved correctly: if both indices happen to
-    // point at "orange truth" (because the player explicitly picked
-    // both copies), the server receives two separate follow-up entries
-    // and plays both, exactly as it should.
     const followups = greedSelected.map((i) => ({
+      type: 'com',
       value: myInfo.hand_blue[i].commandment,
       color: myInfo.hand_blue[i].color,
     }));
     await callApi(`/game/${gameId}/play`, 'POST', {
-      name: myName,
-      type: 'sin',
-      value: 'greed',
-      greed_followups: followups,
+      name: myName, type: 'sin', value: 'greed', extra_cards: followups,
     });
     setMessage('');
-  } catch (err) {
-    setMessage(err.message);
-  }
+  } catch (err) { setMessage(err.message); }
   exitSpecialMode();
 });
 
 $('playGreedAloneBtn').addEventListener('click', async () => {
   try {
     await callApi(`/game/${gameId}/play`, 'POST', {
-      name: myName,
-      type: 'sin',
-      value: 'greed',
-      greed_followups: [],
+      name: myName, type: 'sin', value: 'greed', extra_cards: [],
     });
     setMessage('');
-  } catch (err) {
-    setMessage(err.message);
-  }
+  } catch (err) { setMessage(err.message); }
   exitSpecialMode();
 });
 
 $('cancelGreedBtn').addEventListener('click', exitSpecialMode);
-
-// ----- reaction picker (sloth/lust/gluttony pending reaction) -----
-function renderReactionPicker(state, myInfo) {
-  const section = $('reactionSection');
-  section.style.display = '';
-  const container = $('reactionChoices');
-  container.innerHTML = '';
-
-  const pendingReaction = state.pending_reaction;
-  const hasPendingSloth = myInfo.pending_sloth_reaction;
-  const sin = pendingReaction ? pendingReaction.sin : 'sloth';
-
-  $('reactionPrompt').textContent = hasPendingSloth || sin === 'sloth'
-    ? `You are being skipped (sloth). You may fight back or accept the skip.`
-    : `${pendingReaction.from} hit you with ${sin}. You may react or accept the punishment.`;
-
-  // Wrath option
-  const canWrath = pendingReaction ? pendingReaction.can_wrath : myInfo.hand_sins.includes('wrath');
-  if (canWrath) {
-    const btn = document.createElement('button');
-    btn.textContent = sin === 'sloth'
-      ? 'Use wrath (A misses their next 2 turns)'
-      : 'Use wrath (undo punishment, redirect doubled to original thrower)';
-    btn.addEventListener('click', reactWrath);
-    container.appendChild(btn);
-  }
-
-  // Pride option
-  const canPride = pendingReaction ? pendingReaction.can_pride : myInfo.hand_sins.includes('pride');
-  if (canPride) {
-    const btn = document.createElement('button');
-    btn.textContent = sin === 'sloth'
-      ? 'Use pride (skip undone, you get immunity + play a free card)'
-      : 'Use pride (punishment undone, immunity granted, play a free card)';
-    btn.addEventListener('click', () => {
-      prideContext = 'reactive';
-      enterPrideCommandmentMode();
-    });
-    container.appendChild(btn);
-  }
-
-  // Accept option
-  const acceptBtn = document.createElement('button');
-  acceptBtn.textContent = sin === 'sloth'
-    ? 'Accept skip (skip your turn)'
-    : 'Accept punishment (do nothing)';
-  acceptBtn.addEventListener('click', acceptPunishment);
-  container.appendChild(acceptBtn);
-}
-
-async function reactWrath() {
-  try {
-    await callApi(`/game/${gameId}/react_wrath`, 'POST', { name: myName });
-    setMessage('');
-    mode = 'normal';
-  } catch (err) {
-    setMessage(err.message);
-  }
-}
-
-async function acceptPunishment() {
-  try {
-    await callApi(`/game/${gameId}/accept_skip`, 'POST', { name: myName });
-    setMessage('');
-  } catch (err) {
-    setMessage(err.message);
-  }
-}
-
-// ----- pride commandment picker (proactive pride OR reactive pride) -----
-function enterPrideCommandmentMode() {
-  $('reactionSection').style.display = 'none';
-  $('greedFollowupSection').style.display = 'none';
-  $('noMovesSection').style.display = 'none';
-  $('myBlueCards').innerHTML = '';
-  $('mySinCards').innerHTML = '';
-  mode = prideContext === 'reactive' ? 'react_pride_commandment' : 'pride_commandment';
-  renderPrideCommandmentChoices(lastKnownState);
-}
-
-function renderPrideCommandmentChoices(state) {
-  const section = $('prideCommandmentSection');
-  section.style.display = '';
-  const container = $('prideCommandmentChoices');
-  container.innerHTML = '';
-
-  const myInfo = state.your_hand;
-  $('prideCommandmentPrompt').textContent = prideContext === 'reactive'
-    ? 'Use pride to undo the punishment. Choose any commandment card to play alongside it (free/wild):'
-    : 'Choose any commandment card to play alongside pride (free/wild):';
-
-  for (let i = 0; i < myInfo.hand_blue.length; i++) {
-    const card = myInfo.hand_blue[i];
-    const btn = document.createElement('button');
-    btn.textContent = cardLabel(card);
-    btn.addEventListener('click', () => confirmPride(card));
-    container.appendChild(btn);
-  }
-
-  if (myInfo.hand_blue.length === 0) {
-    const p = document.createElement('p');
-    p.textContent = 'You have no commandment cards to play with pride.';
-    container.appendChild(p);
-  }
-}
-
-async function confirmPride(card) {
-  try {
-    if (prideContext === 'reactive') {
-      await callApi(`/game/${gameId}/react_pride`, 'POST', {
-        name: myName,
-        commandment: card.commandment,
-        color: card.color,
-      });
-    } else {
-      // Proactive pride: use the /play route with the commandment in greed_followups
-      await callApi(`/game/${gameId}/play`, 'POST', {
-        name: myName,
-        type: 'sin',
-        value: 'pride',
-        greed_followups: [{ value: card.commandment, color: card.color }],
-      });
-    }
-    setMessage('');
-  } catch (err) {
-    setMessage(err.message);
-  }
-  exitSpecialMode();
-}
-
-$('cancelPrideBtn').addEventListener('click', exitSpecialMode);
 
 function exitSpecialMode() {
   mode = 'normal';
   prideContext = null;
   greedSelected = [];
   $('greedFollowupSection').style.display = 'none';
-  $('prideCommandmentSection').style.display = 'none';
-  $('reactionSection').style.display = 'none';
+  $('prideFollowupSection').style.display = 'none';
 }
 
-// ----- forced lust burn -----
-// Shows whichever choice applies: if the player holds sin cards, they
-// pick one to burn; if they hold none, there's nothing to pick -- a
-// single button just triggers drawing-then-burning automatically.
-function renderLustBurnPicker(myInfo) {
-  const section = $('lustBurnSection');
-  section.style.display = '';
-
-  $('lustBurnPrompt').textContent = myInfo.hand_sins.length > 0
-    ? `You must burn ${myInfo.pending_lust_burns} sin card(s) before playing (lust). Choose one to burn now:`
-    : `You must burn ${myInfo.pending_lust_burns} sin card(s) before playing (lust). You have none -- draw one to burn:`;
-
-  const container = $('lustBurnChoices');
-  container.innerHTML = '';
-
-  if (myInfo.hand_sins.length > 0) {
-    for (const sin of myInfo.hand_sins) {
-      const btn = document.createElement('button');
-      btn.textContent = `Burn ${sin}`;
-      btn.addEventListener('click', () => resolveLustBurn(sin));
-      container.appendChild(btn);
-    }
-  } else {
-    const btn = document.createElement('button');
-    btn.textContent = 'Draw and burn';
-    btn.addEventListener('click', () => resolveLustBurn(null));
-    container.appendChild(btn);
-  }
-}
-
-async function resolveLustBurn(chosenSin) {
-  try {
-    const body = { name: myName };
-    if (chosenSin) body.sin = chosenSin;
-    await callApi(`/game/${gameId}/burn_sin`, 'POST', body);
-    setMessage('');
-  } catch (err) {
-    setMessage(err.message);
-  }
-}
-
-// ----- forced draw -----
-$('forcedDrawBtn').addEventListener('click', async () => {
-  try {
-    await callApi(`/game/${gameId}/forced_draw`, 'POST', { name: myName });
-    setMessage('');
-  } catch (err) {
-    setMessage(err.message);
-  }
-});
-
-// ----- polling loop -----
+// ---------------------------------------------------------------------------
+// Polling
+// ---------------------------------------------------------------------------
 async function pollLoop() {
   try {
     const state = await fetchState();
 
-    // Detect a rematch: the server resets its event-id counter back to 1
-    // on every fresh round, so if the new batch's ids are LOWER than
-    // what we've already processed, the game was reset out from under
-    // us -- clear the tracker so the new round's events play sounds
-    // again instead of being silently skipped as "already seen".
+    // Detect rematch (event ids reset to 1)
     if (state.events && state.events.length > 0) {
-      const maxNewId = Math.max(...state.events.map((ev) => ev.id));
-      if (maxNewId < lastProcessedEventId) {
-        lastProcessedEventId = -1;
-      }
+      const maxNew = Math.max(...state.events.map((e) => e.id));
+      if (maxNew < lastProcessedEventId) lastProcessedEventId = -1;
     }
     processSoundEvents(state.events);
 
@@ -789,7 +616,7 @@ async function pollLoop() {
 }
 
 if (!gameId || !myName) {
-  setMessage('Missing game ID or name in the URL. Go back to the start page.');
+  setMessage('Missing game ID or name in URL. Go back to start page.');
 } else {
   pollLoop();
   setInterval(pollLoop, 1500);
